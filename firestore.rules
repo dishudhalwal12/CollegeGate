@@ -1,0 +1,51 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userRecord() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function role() {
+      return userRecord().data.role;
+    }
+
+    function isAdmin() {
+      return signedIn() && role() == "admin";
+    }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /outpasses/{outpassId} {
+      allow read: if signedIn() && (
+        isAdmin() ||
+        role() == "guard" ||
+        (role() == "student" && resource.data.studentId == request.auth.uid) ||
+        (role() == "warden" && resource.data.assignedWardenId == request.auth.uid)
+      );
+      allow create: if signedIn() && role() == "student" && request.resource.data.studentId == request.auth.uid;
+      allow update: if signedIn() && (
+        isAdmin() ||
+        role() == "guard" ||
+        (role() == "warden" && resource.data.assignedWardenId == request.auth.uid)
+      );
+    }
+
+    match /gateLogs/{logId} {
+      allow read: if signedIn() && (isAdmin() || role() == "guard" || role() == "warden");
+      allow write: if signedIn() && (isAdmin() || role() == "guard");
+    }
+
+    match /systemConfig/{configId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+  }
+}
