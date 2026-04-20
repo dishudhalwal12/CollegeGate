@@ -72,12 +72,58 @@ function mutateStore<T>(mutator: (store: LocalStore) => T) {
   return result;
 }
 
+function collectErrorMessages(error: unknown): string[] {
+  if (typeof error === "string") {
+    return [error];
+  }
+
+  if (!error || typeof error !== "object") {
+    return [];
+  }
+
+  const messages = new Set<string>();
+  const record = error as {
+    message?: unknown;
+    error?: unknown;
+    cause?: unknown;
+    details?: unknown;
+    body?: unknown;
+  };
+
+  if (typeof record.message === "string") {
+    messages.add(record.message);
+  }
+
+  if (typeof record.error === "string") {
+    messages.add(record.error);
+  } else if (record.error) {
+    collectErrorMessages(record.error).forEach((message) => messages.add(message));
+  }
+
+  if (record.cause) {
+    collectErrorMessages(record.cause).forEach((message) => messages.add(message));
+  }
+
+  if (typeof record.details === "string") {
+    messages.add(record.details);
+  }
+
+  if (typeof record.body === "string") {
+    messages.add(record.body);
+  }
+
+  return [...messages];
+}
+
+function isPermissionDeniedMessage(message: string) {
+  return /(?:missing or )?insufficient permissions|permission[_ -]?denied/i.test(message);
+}
+
 export function shouldUseLocalStore(error: unknown) {
-  return (
-    error instanceof Error &&
-    /(insufficient permissions|permission_denied|permission-denied|firestore request failed|firestore lookup failed)/i.test(
-      error.message,
-    )
+  return collectErrorMessages(error).some(
+    (message) =>
+      isPermissionDeniedMessage(message) ||
+      /firestore request failed|firestore lookup failed/i.test(message),
   );
 }
 

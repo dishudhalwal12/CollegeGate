@@ -6,6 +6,7 @@ import {
   validateRequestWindow,
   type OutpassRecord,
 } from "@/lib/collegegate";
+import { shouldUseLocalStore } from "@/lib/local-store";
 
 const baseOutpass: OutpassRecord = {
   id: "one",
@@ -26,6 +27,17 @@ const baseOutpass: OutpassRecord = {
 };
 
 describe("collegegate domain helpers", () => {
+  it("detects permission-denied errors from Firebase and wrapped responses", () => {
+    expect(shouldUseLocalStore(new Error("Missing or insufficient permissions."))).toBe(true);
+    expect(
+      shouldUseLocalStore({
+        message: "Firestore lookup failed.",
+        cause: { error: { message: "Permission denied." } },
+      }),
+    ).toBe(true);
+    expect(shouldUseLocalStore(new Error("Something unrelated happened."))).toBe(false);
+  });
+
   it("rejects requests that exceed campus duration", () => {
     expect(() =>
       validateRequestWindow(
