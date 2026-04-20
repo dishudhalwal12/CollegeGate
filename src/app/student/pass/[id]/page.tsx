@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import QRCode from "qrcode";
+import { PassQrTools } from "@/components/client-ui";
 import { DashboardFrame, SectionHeading, StatusBadge } from "@/components/dashboard-ui";
 import { requireSession } from "@/lib/auth";
 import { formatDateTime } from "@/lib/collegegate";
@@ -22,11 +23,12 @@ export default async function StudentPassPage({
 
   const qrToken = outpass.qrToken ?? outpass.id;
   const qrCodeUrl = await QRCode.toDataURL(qrToken, {
-    width: 360,
-    margin: 1,
+    width: 480,
+    margin: 2,
+    errorCorrectionLevel: "H",
     color: {
-      dark: "#11192f",
-      light: "#fff9ed",
+      dark: "#000000",
+      light: "#ffffff",
     },
   });
 
@@ -62,12 +64,23 @@ export default async function StudentPassPage({
                 Present this QR code at the gate for exit and again on return. The same token
                 drives the full guard log.
               </p>
+              <PassQrTools
+                qrToken={qrToken}
+                qrCodeUrl={qrCodeUrl}
+                filename={`collegegate-pass-${outpass.id}.png`}
+              />
               <Link className="ghost-button" href="/student">
                 Back to dashboard
               </Link>
             </div>
             <div className="passport-qr">
-              <Image src={qrCodeUrl} alt="CollegeGate QR pass" width={280} height={280} />
+              <Image
+                src={qrCodeUrl}
+                alt="CollegeGate QR pass"
+                width={320}
+                height={320}
+                unoptimized
+              />
             </div>
           </div>
         </article>

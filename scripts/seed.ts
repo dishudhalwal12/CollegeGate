@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createAssignmentKey } from "../src/lib/collegegate";
 import { requireAdminSdk } from "../src/lib/firebase-admin";
 
 async function upsertAuthUser(
@@ -39,7 +40,7 @@ async function main() {
       name: "Radhika Sharma",
       role: "warden",
       department: "Student Affairs",
-      hostelBlock: "Girls Hostel",
+      hostelBlock: "Block A",
       phone: "+91 9999999992",
     },
     {
@@ -80,6 +81,7 @@ async function main() {
             role: seeded[index].role,
             department: seeded[index].department,
             hostelBlock: seeded[index].hostelBlock,
+            assignmentKey: createAssignmentKey(seeded[index].hostelBlock),
             phone: seeded[index].phone,
             wardenId:
               seeded[index].role === "student" && warden ? warden.uid : undefined,

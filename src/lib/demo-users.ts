@@ -2,7 +2,7 @@ import "server-only";
 
 import type { Auth } from "firebase-admin/auth";
 import type { Firestore } from "firebase-admin/firestore";
-import type { UserRole } from "@/lib/collegegate";
+import { createAssignmentKey, type UserRole } from "@/lib/collegegate";
 
 type DemoRoleConfig = {
   role: UserRole;
@@ -30,7 +30,7 @@ export const demoRoleConfigs: DemoRoleConfig[] = [
     password: "CollegeGate@123",
     name: "Radhika Sharma",
     department: "Student Affairs",
-    hostelBlock: "Girls Hostel",
+    hostelBlock: "Block A",
     phone: "+91 9999999992",
   },
   {
@@ -110,6 +110,7 @@ export async function ensureDemoAccounts(adminAuth: Auth, adminDb: Firestore) {
             role: config.role,
             department: config.department,
             hostelBlock: config.hostelBlock,
+            assignmentKey: createAssignmentKey(config.hostelBlock),
             phone: config.phone,
             ...(config.role === "student"
               ? {

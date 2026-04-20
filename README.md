@@ -70,8 +70,9 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Registration Model
 
-- Students can self-register and start using the app immediately.
-- Warden, guard, and admin signups are recorded as pending requests until an admin approves them.
+- Students, wardens, and guards can self-register and start using the app immediately.
+- Admin signups are recorded as pending requests until an admin approves them.
+- Student requests are routed to wardens in Firebase using a normalized assignment key derived from the hostel block or duty station.
 - Admin SDK credentials are no longer required for normal app sign-in or protected routes.
 - Admin SDK credentials are still required for `npm run seed`.
 

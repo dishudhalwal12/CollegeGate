@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildRegistrationProfile,
   buildCsv,
+  createAssignmentKey,
   isOutpassOverdue,
+  resolveAssignedWarden,
+  serializeUser,
   summarizeOutpasses,
   validateRequestWindow,
   type OutpassRecord,
@@ -25,6 +29,14 @@ const baseOutpass: OutpassRecord = {
   createdAt: "2026-04-15T09:00:00.000Z",
   updatedAt: "2026-04-15T09:00:00.000Z",
 };
+
+const baseRegistration = {
+  name: "Radhika Sharma",
+  email: "warden@collegegate.demo",
+  department: "Student Affairs",
+  hostelBlock: "Block A",
+  phone: "+91 9999999992",
+} as const;
 
 describe("collegegate domain helpers", () => {
   it("detects permission-denied errors from Firebase and wrapped responses", () => {
@@ -87,6 +99,99 @@ describe("collegegate domain helpers", () => {
     expect(summary.pending).toBe(1);
     expect(summary.active).toBe(1);
     expect(summary.completed).toBe(1);
+  });
+
+  it("creates active student, warden, and guard signups while keeping admin pending", () => {
+    const wardenRegistration = buildRegistrationProfile(
+      {
+        ...baseRegistration,
+        role: "warden",
+      },
+      "2026-04-20T10:00:00.000Z",
+    );
+    const adminRegistration = buildRegistrationProfile(
+      {
+        ...baseRegistration,
+        email: "admin@collegegate.demo",
+        role: "admin",
+      },
+      "2026-04-20T10:00:00.000Z",
+    );
+
+    expect(wardenRegistration.sessionRole).toBe("warden");
+    expect(wardenRegistration.userProfile.role).toBe("warden");
+    expect(wardenRegistration.userProfile.isActive).toBe(true);
+    expect(wardenRegistration.userProfile.requestedRole).toBeUndefined();
+    expect(wardenRegistration.userProfile.assignmentKey).toBe("block-a");
+
+    expect(adminRegistration.sessionRole).toBe("pending");
+    expect(adminRegistration.userProfile.role).toBe("pending");
+    expect(adminRegistration.userProfile.isActive).toBe(false);
+    expect(adminRegistration.userProfile.requestedRole).toBe("admin");
+  });
+
+  it("normalizes assignment keys and derives them for legacy user records", () => {
+    expect(createAssignmentKey(" Block A / North Wing ")).toBe("block-a-north-wing");
+
+    const legacyUser = serializeUser("student-2", {
+      name: "Legacy Student",
+      email: "legacy@collegegate.demo",
+      role: "student",
+      hostelBlock: "Girls Hostel - A",
+      phone: "+91 9999999995",
+      isActive: true,
+    });
+
+    expect(legacyUser.assignmentKey).toBe("girls-hostel-a");
+  });
+
+  it("resolves a single warden for a matching assignment block", () => {
+    const resolution = resolveAssignedWarden(
+      {
+        hostelBlock: "Block A",
+        assignmentKey: createAssignmentKey("Block A"),
+      },
+      [
+        {
+          uid: "warden-1",
+          name: "Radhika Sharma",
+          role: "warden",
+          isActive: true,
+          assignmentKey: createAssignmentKey("Block A"),
+        },
+      ],
+    );
+
+    expect(resolution.issue).toBeNull();
+    expect(resolution.warden?.uid).toBe("warden-1");
+  });
+
+  it("reports missing or duplicate wardens for a student assignment block", () => {
+    const student = {
+      hostelBlock: "Block A",
+      assignmentKey: createAssignmentKey("Block A"),
+    };
+
+    const missing = resolveAssignedWarden(student, []);
+    const multiple = resolveAssignedWarden(student, [
+      {
+        uid: "warden-1",
+        name: "Radhika Sharma",
+        role: "warden",
+        isActive: true,
+        assignmentKey: student.assignmentKey,
+      },
+      {
+        uid: "warden-2",
+        name: "Anita Verma",
+        role: "warden",
+        isActive: true,
+        assignmentKey: student.assignmentKey,
+      },
+    ]);
+
+    expect(missing.issue).toContain("No warden assigned to this block");
+    expect(multiple.issue).toContain("Multiple wardens configured for this block");
   });
 
   it("creates CSV with headers and student rows", () => {

@@ -4,6 +4,7 @@ import { roleLabel } from "@/lib/collegegate";
 
 export default async function PendingApprovalPage() {
   const session = await requireSession("pending");
+  const isAdminRequest = session.requestedRole === "admin";
 
   return (
     <DashboardFrame
@@ -12,11 +13,15 @@ export default async function PendingApprovalPage() {
       title="Awaiting Approval"
     >
       <section className="stack-sm">
-        <SectionHeading title="Registration Status" kicker="Production-safe onboarding" />
+        <SectionHeading
+          title="Registration Status"
+          kicker={isAdminRequest ? "Admin approval required" : "Legacy pending access"}
+        />
         <article className="hero-card">
           <p className="helper-copy">
-            Your account has been created and is waiting for an administrator to approve your
-            requested role.
+            {isAdminRequest
+              ? "Your admin account has been created and is waiting for an administrator to approve it."
+              : "This pending access request is still waiting for an administrator to finish the older approval flow."}
           </p>
           <div className="detail-grid">
             <div>

@@ -2,13 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { ApiError, withApiError } from "@/lib/auth";
 import { getDocument, setDocument } from "@/lib/firestore-rest";
 import { verifyFirebaseIdToken } from "@/lib/firebase-session";
-import { registerProfileSchema } from "@/lib/collegegate";
-import {
-  countActiveLocalAdmins,
-  getLocalUser,
-  shouldUseLocalStore,
-  upsertLocalUser,
-} from "@/lib/local-store";
+import { buildRegistrationProfile, registerProfileSchema } from "@/lib/collegegate";
+import { getLocalUser, shouldUseLocalStore, upsertLocalUser } from "@/lib/local-store";
 
 export async function POST(request: NextRequest) {
   try {
@@ -57,40 +52,22 @@ export async function POST(request: NextRequest) {
       throw new ApiError(409, "This Firebase account is already registered in CollegeGate.");
     }
 
-    const timestamp = new Date().toISOString();
-    const isBootstrapAdmin = input.role === "admin" && countActiveLocalAdmins() === 0;
-    const needsApproval = input.role !== "student" && !isBootstrapAdmin;
-
-    const userProfile = {
-      name: input.name,
-      email: input.email,
-      role: isBootstrapAdmin ? "admin" : needsApproval ? "pending" : "student",
-      department: input.department,
-      hostelBlock: input.hostelBlock,
-      phone: input.phone,
-      isActive: !needsApproval,
-      createdAt: timestamp,
-      ...(needsApproval ? { requestedRole: input.role } : {}),
-    };
+    const registration = buildRegistrationProfile(input);
 
     try {
-      await setDocument(`users/${decoded.uid}`, userProfile, idToken);
+      await setDocument(`users/${decoded.uid}`, registration.userProfile, idToken);
     } catch (error) {
       if (!shouldUseLocalStore(error)) {
         throw error;
       }
 
-      upsertLocalUser(decoded.uid, userProfile);
+      upsertLocalUser(decoded.uid, registration.userProfile);
     }
 
     return NextResponse.json({
       ok: true,
-      role: isBootstrapAdmin ? "admin" : needsApproval ? "pending" : "student",
-      message: isBootstrapAdmin
-        ? "Bootstrap admin account created."
-        : needsApproval
-        ? `Your ${input.role} access request has been submitted for approval.`
-        : "Your student account is ready.",
+      role: registration.sessionRole,
+      message: registration.message,
     });
   } catch (error) {
     return withApiError(error);

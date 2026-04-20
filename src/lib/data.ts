@@ -7,6 +7,7 @@ import {
   decisionSchema,
   defaultSystemConfig,
   parseJson,
+  resolveAssignedWarden,
   scanSchema,
   serializeGateLog,
   serializeOutpass,
@@ -28,7 +29,6 @@ import {
   setDocument,
 } from "@/lib/firestore-rest";
 import {
-  getFirstActiveLocalUser,
   getLocalOutpass,
   getLocalSystemConfig,
   getLocalUser,
@@ -43,7 +43,7 @@ import {
   upsertLocalUser,
 } from "@/lib/local-store";
 
-async function getUserProfile(authToken: string, uid: string) {
+async function getOptionalUserProfile(authToken: string, uid: string) {
   try {
     const snapshot = await getDocument<Record<string, unknown>>(`users/${uid}`, authToken);
 
@@ -56,7 +56,11 @@ async function getUserProfile(authToken: string, uid: string) {
     }
   }
 
-  const localUser = getLocalUser(uid);
+  return getLocalUser(uid);
+}
+
+async function getUserProfile(authToken: string, uid: string) {
+  const localUser = await getOptionalUserProfile(authToken, uid);
 
   if (!localUser) {
     throw new Error("The user profile was not found in CollegeGate.");
@@ -97,16 +101,27 @@ async function getUsers(authToken: string) {
   return listLocalUsers();
 }
 
-async function getUsersForWarden(authToken: string, wardenId: string) {
+async function getUsersByIds(authToken: string, userIds: string[]) {
+  const uniqueUserIds = [...new Set(userIds)].filter(Boolean);
+
+  const users = await Promise.all(
+    uniqueUserIds.map((uid) => getOptionalUserProfile(authToken, uid)),
+  );
+
+  return users.filter((user): user is UserProfile => Boolean(user));
+}
+
+async function queryUsersOrNull(
+  authToken: string,
+  filters: Array<{ field: string; value: unknown }>,
+  limit = 25,
+) {
   try {
     const snapshots = await queryDocuments<Record<string, unknown>>(
       "users",
       authToken,
-      [
-        { field: "wardenId", value: wardenId },
-        { field: "role", value: "student" },
-      ],
-      200,
+      filters,
+      limit,
     );
 
     return snapshots.map((document) => serializeUser(document.id, document.data));
@@ -116,9 +131,89 @@ async function getUsersForWarden(authToken: string, wardenId: string) {
     }
   }
 
-  return listLocalUsers().filter(
-    (user) => user.role === "student" && user.wardenId === wardenId,
+  return null;
+}
+
+async function getActiveWardensForStudent(authToken: string, student: UserProfile) {
+  const assignmentWardens = await queryUsersOrNull(
+    authToken,
+    [
+      { field: "assignmentKey", value: student.assignmentKey },
+      { field: "role", value: "warden" },
+      { field: "isActive", value: true },
+    ],
+    20,
   );
+
+  if (assignmentWardens && assignmentWardens.length > 0) {
+    return assignmentWardens;
+  }
+
+  const fallbackWardens = await queryUsersOrNull(
+    authToken,
+    [
+      { field: "hostelBlock", value: student.hostelBlock },
+      { field: "role", value: "warden" },
+      { field: "isActive", value: true },
+    ],
+    20,
+  );
+
+  if (fallbackWardens) {
+    return fallbackWardens;
+  }
+
+  return listLocalUsers().filter(
+    (user) =>
+      user.role === "warden" &&
+      user.isActive &&
+      (user.assignmentKey === student.assignmentKey || user.hostelBlock === student.hostelBlock),
+  );
+}
+
+async function resolveStoredWarden(authToken: string, student: UserProfile) {
+  if (!student.wardenId) {
+    return null;
+  }
+
+  if (student.wardenName) {
+    return {
+      uid: student.wardenId,
+      name: student.wardenName,
+    };
+  }
+
+  const warden = await getOptionalUserProfile(authToken, student.wardenId);
+
+  if (!warden || warden.role !== "warden" || !warden.isActive) {
+    return null;
+  }
+
+  return {
+    uid: warden.uid,
+    name: warden.name,
+  };
+}
+
+async function resolveStudentWarden(authToken: string, student: UserProfile) {
+  const storedWarden = await resolveStoredWarden(authToken, student);
+
+  if (storedWarden) {
+    return {
+      wardenId: storedWarden.uid,
+      wardenName: storedWarden.name,
+      issue: null,
+    };
+  }
+
+  const wardens = await getActiveWardensForStudent(authToken, student);
+  const resolution = resolveAssignedWarden(student, wardens);
+
+  return {
+    wardenId: resolution.warden?.uid ?? null,
+    wardenName: resolution.warden?.name ?? null,
+    issue: resolution.issue,
+  };
 }
 
 async function getOutpasses(authToken: string) {
@@ -211,9 +306,17 @@ export async function getStudentDashboard(session: AuthSession) {
     getSystemConfig(session.authToken),
   ]);
   const sortedRequests = sortByCreated(requests);
+  const resolvedWarden = await resolveStudentWarden(session.authToken, student);
 
   return {
-    student,
+    student:
+      !student.wardenName && resolvedWarden.wardenName
+        ? {
+            ...student,
+            wardenId: resolvedWarden.wardenId ?? student.wardenId,
+            wardenName: resolvedWarden.wardenName,
+          }
+        : student,
     requests: sortedRequests,
     config,
     summary: summarizeOutpasses(sortedRequests),
@@ -221,11 +324,12 @@ export async function getStudentDashboard(session: AuthSession) {
 }
 
 export async function getWardenDashboard(session: AuthSession) {
-  const [requests, students] = await Promise.all([
-    getOutpassesForWarden(session.authToken, session.uid),
-    getUsersForWarden(session.authToken, session.uid),
-  ]);
+  const requests = await getOutpassesForWarden(session.authToken, session.uid);
   const sortedRequests = sortByCreated(requests);
+  const students = await getUsersByIds(
+    session.authToken,
+    sortedRequests.map((request) => request.studentId),
+  );
   const studentsById = new Map(students.map((user) => [user.uid, user]));
   const history = new Map<string, OutpassRecord[]>();
 
@@ -290,19 +394,12 @@ export async function createOutpass(session: AuthSession, payload: unknown) {
     throw new Error("This account is inactive.");
   }
 
-  if (!student.wardenId || !student.wardenName) {
-    const fallbackWarden = getFirstActiveLocalUser("warden");
+  const assignedWarden = await resolveStudentWarden(session.authToken, student);
 
-    if (fallbackWarden) {
-      student.wardenId = fallbackWarden.uid;
-      student.wardenName = fallbackWarden.name;
-      upsertLocalUser(student.uid, {
-        wardenId: student.wardenId,
-        wardenName: student.wardenName,
-      });
-    } else {
-      throw new Error("Your account is waiting for warden assignment before you can request an outpass.");
-    }
+  if (!assignedWarden.wardenId || !assignedWarden.wardenName) {
+    throw new Error(
+      assignedWarden.issue ?? "No warden assigned to this block yet. Please contact the admin.",
+    );
   }
 
   validateRequestWindow(input, config);
@@ -317,8 +414,8 @@ export async function createOutpass(session: AuthSession, payload: unknown) {
     destination: input.destination,
     reason: input.reason,
     emergency: input.emergency,
-    assignedWardenId: student.wardenId,
-    assignedWardenName: student.wardenName,
+    assignedWardenId: assignedWarden.wardenId,
+    assignedWardenName: assignedWarden.wardenName,
     status: "pending",
     departureAt: input.departureAt,
     expectedReturnAt: input.expectedReturnAt,
@@ -401,6 +498,19 @@ export async function scanOutpass(session: AuthSession, payload: unknown) {
       .filter((outpass) => outpass.qrToken === input.qrToken)
       .slice(0, 1)
       .map((outpass) => ({ id: outpass.id, data: outpass as unknown as Record<string, unknown> }));
+  }
+
+  if (matches.length === 0) {
+    const fallbackOutpass = await getOutpassById(session.authToken, input.qrToken);
+
+    if (fallbackOutpass && (!fallbackOutpass.qrToken || fallbackOutpass.qrToken === input.qrToken)) {
+      matches = [
+        {
+          id: fallbackOutpass.id,
+          data: fallbackOutpass as unknown as Record<string, unknown>,
+        },
+      ];
+    }
   }
 
   if (matches.length === 0) {

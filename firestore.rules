@@ -30,9 +30,47 @@ service cloud.firestore {
       return signedIn() && request.auth.uid == userId;
     }
 
-    function isPendingRequest() {
+    function hasAssignmentKey(data) {
+      return data.assignmentKey is string && data.assignmentKey.size() > 0;
+    }
+
+    function hasHostelBlock(data) {
+      return data.hostelBlock is string && data.hostelBlock.size() > 0;
+    }
+
+    function profileAssignmentKey(data) {
+      return hasAssignmentKey(data)
+        ? data.assignmentKey
+        : hasHostelBlock(data)
+          ? data.hostelBlock
+          : null;
+    }
+
+    function sharesAssignmentGroup(data) {
+      return hasUserRecord()
+        && profileAssignmentKey(userRecord().data) != null
+        && profileAssignmentKey(data) == profileAssignmentKey(userRecord().data);
+    }
+
+    function isPendingAdminRequest() {
       return request.resource.data.role == "pending"
-        && request.resource.data.requestedRole in ["warden", "guard", "admin"];
+        && request.resource.data.requestedRole == "admin";
+    }
+
+    function isImmediateAccessSignup() {
+      return request.resource.data.role in ["student", "warden", "guard"]
+        && request.resource.data.isActive == true
+        && !request.resource.data.keys().hasAny(["requestedRole"]);
+    }
+
+    function isLegacyAssignedStudent(data) {
+      return data.wardenId is string && data.wardenId == request.auth.uid;
+    }
+
+    function isLegacyAssignedWarden(userId) {
+      return hasUserRecord()
+        && userRecord().data.wardenId is string
+        && userRecord().data.wardenId == userId;
     }
 
     function validSelfSignupKeys() {
@@ -43,6 +81,7 @@ service cloud.firestore {
         "requestedRole",
         "department",
         "hostelBlock",
+        "assignmentKey",
         "phone",
         "isActive",
         "createdAt"
@@ -55,14 +94,12 @@ service cloud.firestore {
         && request.resource.data.email == request.auth.token.email
         && request.resource.data.department is string
         && request.resource.data.hostelBlock is string
+        && request.resource.data.assignmentKey is string
         && request.resource.data.phone is string
         && request.resource.data.createdAt is string
         && (
-          (request.resource.data.role == "student"
-            && request.resource.data.isActive == true
-            && !request.resource.data.keys().hasAny(["requestedRole"]))
-          ||
-          (isPendingRequest() && request.resource.data.isActive == false)
+          isImmediateAccessSignup()
+          || (isPendingAdminRequest() && request.resource.data.isActive == false)
         );
     }
 
@@ -73,9 +110,21 @@ service cloud.firestore {
       allow read: if isOwnProfile(userId)
         || isAdmin()
         || (isActiveUser()
+          && role() == "student"
+          && resource.data.role == "warden"
+          && resource.data.isActive == true
+          && (
+            sharesAssignmentGroup(resource.data)
+            || isLegacyAssignedWarden(userId)
+          ))
+        || (isActiveUser()
           && role() == "warden"
           && resource.data.role == "student"
-          && resource.data.wardenId == request.auth.uid);
+          && resource.data.isActive == true
+          && (
+            isLegacyAssignedStudent(resource.data)
+            || sharesAssignmentGroup(resource.data)
+          ));
       allow update, delete: if isAdmin();
     }
 

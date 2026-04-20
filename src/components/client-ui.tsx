@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useEffectEvent, useId, useState, useTransition } from "react";
+import { useEffect, useEffectEvent, useId, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { FirebaseError } from "firebase/app";
 import {
@@ -10,6 +10,9 @@ import {
 } from "firebase/auth";
 import {
   AlertCircle,
+  Copy,
+  Download,
+  ImageUp,
   LoaderCircle,
   LogOut,
   QrCode,
@@ -38,12 +41,12 @@ const signupRoles: Array<{
   {
     value: "warden",
     label: "Warden",
-    detail: "Approval-queue access stays pending until an admin approves it.",
+    detail: "Instant access to review and approve student requests for your block.",
   },
   {
     value: "guard",
     label: "Guard",
-    detail: "Gate scanner access is requested first, then activated by admin.",
+    detail: "Instant access to scan approved passes and track gate movement.",
   },
   {
     value: "admin",
@@ -137,6 +140,18 @@ function toRegistrationErrorMessage(cause: unknown) {
   return "Unable to create your account.";
 }
 
+function toQrImageErrorMessage(cause: unknown) {
+  if (cause instanceof Error) {
+    if (/No MultiFormat Readers|No code found|not found exception/i.test(cause.message)) {
+      return "No readable QR code was found in that image. Upload the original QR or use the manual token.";
+    }
+
+    return cause.message;
+  }
+
+  return "Unable to read that QR image.";
+}
+
 export function LoginForm() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -220,7 +235,7 @@ export function LoginForm() {
         }).catch(() => undefined);
 
         const idToken = await result.user.getIdToken(true);
-        await readJson(
+        const registrationData = await readJson(
           await fetchWithTimeout("/api/auth/register", {
             method: "POST",
             headers: {
@@ -252,11 +267,7 @@ export function LoginForm() {
         });
 
         const data = await readJson(sessionResponse);
-        setMessage(
-          registration.role === "student"
-            ? "Your account is ready."
-            : "Your access request has been submitted for approval.",
-        );
+        setMessage(registrationData.message ?? "Your account is ready.");
         router.push(data.redirectTo ?? "/");
         router.refresh();
       } catch (cause) {
@@ -269,7 +280,7 @@ export function LoginForm() {
     });
   }
 
-  const isStaffSignup = registration.role !== "student";
+  const needsApproval = registration.role === "admin";
 
   return (
     <div className="stack-sm">
@@ -472,11 +483,11 @@ export function LoginForm() {
             </div>
           </div>
 
-          {isStaffSignup ? (
+          {needsApproval ? (
             <p className="inline-feedback">
               <UserRoundPlus size={16} />
-              Staff and admin accounts are created as approval requests first. They unlock after an
-              admin reviews them.
+              Admin accounts are created as approval requests first. Student, warden, and guard
+              access becomes active immediately.
             </p>
           ) : null}
 
@@ -527,6 +538,54 @@ export function LogoutButton() {
       {isPending ? <LoaderCircle className="spin" size={16} /> : <LogOut size={16} />}
       Logout
     </button>
+  );
+}
+
+export function PassQrTools({
+  qrToken,
+  qrCodeUrl,
+  filename,
+}: {
+  qrToken: string;
+  qrCodeUrl: string;
+  filename: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyToken() {
+    try {
+      await navigator.clipboard.writeText(qrToken);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <div className="stack-sm">
+      <div className="action-row">
+        <a className="action-button" href={qrCodeUrl} download={filename}>
+          <Download size={16} />
+          Download QR
+        </a>
+        <button className="ghost-button" type="button" onClick={() => void copyToken()}>
+          <Copy size={16} />
+          {copied ? "Token Copied" : "Copy Token"}
+        </button>
+      </div>
+      <label className="form-field">
+        <span>Manual QR token</span>
+        <input
+          readOnly
+          value={qrToken}
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      </label>
+      <p className="helper-copy">
+        Use this exact token in the guard portal if camera scanning is unavailable.
+      </p>
+    </div>
   );
 }
 
@@ -924,65 +983,150 @@ export function ScannerPanel({
   activeOutpasses: OutpassRecord[];
 }) {
   const scannerId = useId().replaceAll(":", "");
+  const uploadId = `${scannerId}-upload`;
+  const fileScannerId = `${scannerId}-file`;
   const router = useRouter();
+  const cameraScannerRef = useRef<{
+    stop: () => Promise<void>;
+    clear: () => void;
+  } | null>(null);
   const [token, setToken] = useState("");
   const [cameraEnabled, setCameraEnabled] = useState(false);
+  const [isImageScanning, setIsImageScanning] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
 
   const handleDetected = useEffectEvent((decodedText: string) => {
-    setToken(decodedText);
+    setToken(decodedText.trim());
     setCameraEnabled(false);
     submit(decodedText);
   });
 
+  const stopCameraScanner = useEffectEvent(async () => {
+    const scanner = cameraScannerRef.current;
+    cameraScannerRef.current = null;
+
+    if (!scanner) {
+      return;
+    }
+
+    await scanner.stop().catch(() => undefined);
+    scanner.clear();
+  });
+
   useEffect(() => {
     if (!cameraEnabled) {
+      void stopCameraScanner();
       return;
     }
 
     let mounted = true;
     let scanner: {
-      render: (
-        success: (decodedText: string) => void,
-        failure: (errorMessage: string) => void,
-      ) => void;
-      clear: () => Promise<void>;
+      stop: () => Promise<void>;
+      clear: () => void;
     } | null = null;
 
     void import("html5-qrcode")
-      .then(({ Html5QrcodeScanner }) => {
+      .then(async ({ Html5Qrcode, Html5QrcodeSupportedFormats }) => {
         if (!mounted) return;
-        scanner = new Html5QrcodeScanner(
+        const nextScanner = new Html5Qrcode(
           scannerId,
+          {
+            formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+            useBarCodeDetectorIfSupported: true,
+            verbose: false,
+          },
+        );
+        scanner = nextScanner;
+        cameraScannerRef.current = nextScanner;
+
+        await nextScanner.start(
+          { facingMode: "environment" },
           {
             fps: 10,
             qrbox: { width: 220, height: 220 },
+            aspectRatio: 1,
           },
-          false,
-        );
-        scanner.render(
           (decodedText) => handleDetected(decodedText),
           () => undefined,
         );
       })
-      .catch(() => {
-        setError("Camera scanning could not start on this browser.");
+      .catch((cause) => {
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "Camera scanning could not start on this browser.",
+        );
         setCameraEnabled(false);
       });
 
     return () => {
       mounted = false;
+      cameraScannerRef.current = null;
       if (scanner) {
-        void scanner.clear().catch(() => undefined);
+        void scanner.stop().catch(() => undefined).finally(() => {
+          scanner?.clear();
+        });
       }
     };
   }, [cameraEnabled, scannerId]);
 
-  function submit(qrToken = token) {
+  const scanImageFile = useEffectEvent(async (file: File) => {
     setError("");
     setMessage("");
+    setIsImageScanning(true);
+
+    try {
+      const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import("html5-qrcode");
+      const fileScanner = new Html5Qrcode(fileScannerId, {
+        formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+        useBarCodeDetectorIfSupported: true,
+        verbose: false,
+      });
+
+      try {
+        const decodedText = await fileScanner.scanFile(file, false);
+        setToken(decodedText.trim());
+        submit(decodedText);
+      } finally {
+        fileScanner.clear();
+      }
+    } catch (cause) {
+      setError(toQrImageErrorMessage(cause));
+    } finally {
+      setIsImageScanning(false);
+    }
+  });
+
+  const handleImagePaste = useEffectEvent((event: React.ClipboardEvent<HTMLDivElement>) => {
+    const imageItem = Array.from(event.clipboardData.items).find((item) =>
+      item.type.startsWith("image/"),
+    );
+
+    if (!imageItem) {
+      return;
+    }
+
+    const imageFile = imageItem.getAsFile();
+
+    if (!imageFile) {
+      return;
+    }
+
+    event.preventDefault();
+    void scanImageFile(imageFile);
+  });
+
+  function submit(qrToken = token) {
+    const normalizedToken = qrToken.trim();
+    setError("");
+    setMessage("");
+
+    if (!normalizedToken) {
+      setError("Scan, upload, or paste a QR token before validating.");
+      return;
+    }
 
     startTransition(async () => {
       try {
@@ -991,7 +1135,7 @@ export function ScannerPanel({
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ qrToken }),
+          body: JSON.stringify({ qrToken: normalizedToken }),
         });
         const data = await readJson(response);
         setMessage(data.message ?? "Gate state updated.");
@@ -1004,23 +1148,52 @@ export function ScannerPanel({
   }
 
   return (
-    <div className="stack-sm">
+    <div className="stack-sm" onPaste={handleImagePaste}>
       <div className="scan-surface">
         <div className="scan-topline">
           <span>Ready for active passes</span>
           <strong>{activeOutpasses.length}</strong>
         </div>
         <div id={scannerId} className="scanner-box" />
+        <div
+          id={fileScannerId}
+          aria-hidden="true"
+          style={{ position: "absolute", width: 0, height: 0, overflow: "hidden" }}
+        />
         <div className="action-row">
           <button
             className="action-button"
             type="button"
             onClick={() => setCameraEnabled((current) => !current)}
+            disabled={isImageScanning}
           >
             <ScanLine size={16} />
             {cameraEnabled ? "Stop Camera" : "Start Camera"}
           </button>
+          <label className="ghost-button" htmlFor={uploadId}>
+            <ImageUp size={16} />
+            {isImageScanning ? "Reading Image..." : "Upload QR Image"}
+          </label>
+          <input
+            id={uploadId}
+            type="file"
+            accept="image/*"
+            style={{ display: "none" }}
+            onChange={(event) => {
+              const imageFile = event.target.files?.[0];
+
+              if (imageFile) {
+                void scanImageFile(imageFile);
+              }
+
+              event.currentTarget.value = "";
+            }}
+          />
         </div>
+        <p className="helper-copy">
+          Live camera not working? Upload a screenshot of the QR or paste an image directly into
+          this panel.
+        </p>
         <form
           className="stack-xs"
           onSubmit={(event) => {

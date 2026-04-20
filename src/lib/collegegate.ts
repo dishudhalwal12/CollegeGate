@@ -4,6 +4,9 @@ import { z } from "zod";
 export const assignableRoles = ["student", "warden", "guard", "admin"] as const;
 export type AssignableRole = (typeof assignableRoles)[number];
 
+export const instantAccessRoles = ["student", "warden", "guard"] as const;
+export type InstantAccessRole = (typeof instantAccessRoles)[number];
+
 export const roles = [...assignableRoles, "pending"] as const;
 export type UserRole = (typeof roles)[number];
 
@@ -24,6 +27,7 @@ export interface UserProfile {
   requestedRole?: AssignableRole;
   department: string;
   hostelBlock: string;
+  assignmentKey: string;
   phone: string;
   wardenId?: string;
   wardenName?: string;
@@ -150,6 +154,71 @@ export function parseJson<T>(input: unknown, schema: z.ZodType<T>) {
   return schema.parse(input);
 }
 
+export function createAssignmentKey(input: string) {
+  const normalized = input
+    .trim()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return normalized || "general";
+}
+
+export function buildRegistrationProfile(
+  input: z.infer<typeof registerProfileSchema>,
+  timestamp = new Date().toISOString(),
+) {
+  const needsAdminApproval = input.role === "admin";
+  const sessionRole: UserRole = needsAdminApproval ? "pending" : input.role;
+
+  return {
+    sessionRole,
+    message: needsAdminApproval
+      ? "Your admin access request has been submitted for approval."
+      : `Your ${input.role} account is ready.`,
+    userProfile: {
+      name: input.name,
+      email: input.email,
+      role: sessionRole,
+      department: input.department,
+      hostelBlock: input.hostelBlock,
+      assignmentKey: createAssignmentKey(input.hostelBlock),
+      phone: input.phone,
+      isActive: !needsAdminApproval,
+      createdAt: timestamp,
+      ...(needsAdminApproval ? { requestedRole: "admin" as const } : {}),
+    },
+  };
+}
+
+export function resolveAssignedWarden(
+  student: Pick<UserProfile, "assignmentKey" | "hostelBlock">,
+  wardens: Array<
+    Pick<UserProfile, "uid" | "name" | "role" | "isActive" | "assignmentKey">
+  >,
+) {
+  const matches = wardens.filter(
+    (warden) =>
+      warden.role === "warden" &&
+      warden.isActive &&
+      warden.assignmentKey === student.assignmentKey,
+  );
+
+  if (matches.length === 1) {
+    return { warden: matches[0], issue: null };
+  }
+
+  return {
+    warden: null,
+    issue:
+      matches.length === 0
+        ? `No warden assigned to this block (${student.hostelBlock}).`
+        : `Multiple wardens configured for this block (${student.hostelBlock}).`,
+  };
+}
+
 export function serializeUser(uid: string, data: Record<string, unknown>): UserProfile {
   const role = roles.includes(data.role as UserRole)
     ? (data.role as UserRole)
@@ -166,6 +235,9 @@ export function serializeUser(uid: string, data: Record<string, unknown>): UserP
     requestedRole,
     department: String(data.department ?? "Student Affairs"),
     hostelBlock: String(data.hostelBlock ?? "Block A"),
+    assignmentKey: createAssignmentKey(
+      String(data.assignmentKey ?? data.hostelBlock ?? "Block A"),
+    ),
     phone: String(data.phone ?? ""),
     wardenId: data.wardenId ? String(data.wardenId) : undefined,
     wardenName: data.wardenName ? String(data.wardenName) : undefined,

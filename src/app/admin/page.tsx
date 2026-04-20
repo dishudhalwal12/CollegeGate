@@ -42,7 +42,10 @@ export default async function AdminPage() {
       </section>
 
       <section className="stack-sm">
-        <SectionHeading title="Manage Users" kicker="Activate or deactivate accounts" />
+        <SectionHeading
+          title="Manage Users"
+          kicker="Approve pending admin access or activate and deactivate accounts"
+        />
         <div className="users-grid">
           {users.map((user) => (
             <article className="outpass-card" key={user.uid}>
