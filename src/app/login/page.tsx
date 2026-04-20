@@ -20,8 +20,8 @@ export default async function LoginPage() {
               <h1 className="dashboard-title">Access CollegeGate</h1>
               <p className="hero-copy narrow">
                 Create a real Firebase-backed account, choose the role you are requesting, and move
-                into the correct workflow. Student, warden, and guard accounts activate
-                immediately, while admin requests stay pending until approved.
+                into the correct workflow. Student, warden, guard, and admin accounts now activate
+                immediately and land on their live dashboards.
               </p>
 
               <LoginForm />
@@ -54,10 +54,10 @@ export default async function LoginPage() {
                   </div>
                   <div className="story-card">
                     <p className="micro-copy">Admin</p>
-                    <strong>Approval required</strong>
+                    <strong>Instant access</strong>
                     <p className="helper-copy">
-                      Admin signups are still held for manual approval before control-room access is
-                      activated.
+                      Open the control room immediately to manage rules, students, and gate
+                      discipline actions.
                     </p>
                   </div>
                   <div className="story-card">

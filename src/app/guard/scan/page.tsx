@@ -8,9 +8,9 @@ export default async function GuardScanPage() {
   const { activeOutpasses } = await getGuardDashboard(session);
 
   return (
-    <DashboardFrame session={session} eyebrow="Dedicated scan mode" title="QR Gate Station">
+    <DashboardFrame session={session} eyebrow="Dedicated scan mode" title="QR Exit And Entry Station">
       <section className="stack-sm">
-        <SectionHeading title="Scan Desk" kicker="Camera-first validation" />
+        <SectionHeading title="Scan Desk" kicker="Camera, upload, or token validation" />
         <ScannerPanel activeOutpasses={activeOutpasses} />
       </section>
     </DashboardFrame>

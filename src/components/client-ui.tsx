@@ -23,6 +23,7 @@ import {
 import { clientAuth } from "@/lib/firebase";
 import type {
   AssignableRole,
+  GateAction,
   OutpassRecord,
   SystemConfig,
   UserProfile,
@@ -51,7 +52,7 @@ const signupRoles: Array<{
   {
     value: "admin",
     label: "Admin",
-    detail: "Control-room access is always held for manual approval.",
+    detail: "Instant access to the control room, reports, and discipline workflow.",
   },
 ] as const;
 
@@ -280,8 +281,6 @@ export function LoginForm() {
     });
   }
 
-  const needsApproval = registration.role === "admin";
-
   return (
     <div className="stack-sm">
       <div className="auth-switch">
@@ -483,13 +482,10 @@ export function LoginForm() {
             </div>
           </div>
 
-          {needsApproval ? (
-            <p className="inline-feedback">
-              <UserRoundPlus size={16} />
-              Admin accounts are created as approval requests first. Student, warden, and guard
-              access becomes active immediately.
-            </p>
-          ) : null}
+          <p className="inline-feedback">
+            <UserRoundPlus size={16} />
+            Every role now opens its own dashboard immediately after registration.
+          </p>
 
           <button className="action-button" type="submit" disabled={isPending}>
             {isPending ? <LoaderCircle className="spin" size={16} /> : <UserRoundPlus size={16} />}
@@ -991,6 +987,7 @@ export function ScannerPanel({
     clear: () => void;
   } | null>(null);
   const [token, setToken] = useState("");
+  const [gateAction, setGateAction] = useState<GateAction>("exit");
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [isImageScanning, setIsImageScanning] = useState(false);
   const [message, setMessage] = useState("");
@@ -1135,7 +1132,10 @@ export function ScannerPanel({
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ qrToken: normalizedToken }),
+          body: JSON.stringify({
+            qrToken: normalizedToken,
+            gateAction,
+          }),
         });
         const data = await readJson(response);
         setMessage(data.message ?? "Gate state updated.");
@@ -1151,8 +1151,20 @@ export function ScannerPanel({
     <div className="stack-sm" onPaste={handleImagePaste}>
       <div className="scan-surface">
         <div className="scan-topline">
-          <span>Ready for active passes</span>
+          <span>Ready for gate validation</span>
           <strong>{activeOutpasses.length}</strong>
+        </div>
+        <div className="form-grid compact">
+          <label className="form-field">
+            <span>Gate action</span>
+            <select
+              value={gateAction}
+              onChange={(event) => setGateAction(event.target.value as GateAction)}
+            >
+              <option value="exit">Exit scan</option>
+              <option value="entry">Entry scan</option>
+            </select>
+          </label>
         </div>
         <div id={scannerId} className="scanner-box" />
         <div
@@ -1192,7 +1204,7 @@ export function ScannerPanel({
         </div>
         <p className="helper-copy">
           Live camera not working? Upload a screenshot of the QR or paste an image directly into
-          this panel.
+          this panel. Choose exit when the student leaves and entry when they return.
         </p>
         <form
           className="stack-xs"
@@ -1212,7 +1224,7 @@ export function ScannerPanel({
           </label>
           <button className="ghost-button" type="submit" disabled={isPending}>
             {isPending ? <LoaderCircle className="spin" size={16} /> : <QrCode size={16} />}
-            Validate Pass
+            {gateAction === "exit" ? "Validate Exit" : "Validate Entry"}
           </button>
         </form>
         {message ? <p className="inline-feedback success">{message}</p> : null}

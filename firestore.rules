@@ -58,9 +58,23 @@ service cloud.firestore {
     }
 
     function isImmediateAccessSignup() {
-      return request.resource.data.role in ["student", "warden", "guard"]
+      return request.resource.data.role in ["student", "warden", "guard", "admin"]
         && request.resource.data.isActive == true
         && !request.resource.data.keys().hasAny(["requestedRole"]);
+    }
+
+    function canSelfActivateLegacyAdmin(userId) {
+      return isOwnProfile(userId)
+        && resource.data.role == "pending"
+        && resource.data.requestedRole == "admin"
+        && request.resource.data.role == "admin"
+        && request.resource.data.isActive == true
+        && request.resource.data.requestedRole == null
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly([
+          "role",
+          "isActive",
+          "requestedRole"
+        ]);
     }
 
     function isLegacyAssignedStudent(data) {
@@ -83,6 +97,8 @@ service cloud.firestore {
         "hostelBlock",
         "assignmentKey",
         "phone",
+        "passBlocked",
+        "penaltyCount",
         "isActive",
         "createdAt"
       ]);
@@ -96,6 +112,8 @@ service cloud.firestore {
         && request.resource.data.hostelBlock is string
         && request.resource.data.assignmentKey is string
         && request.resource.data.phone is string
+        && request.resource.data.passBlocked == false
+        && request.resource.data.penaltyCount == 0
         && request.resource.data.createdAt is string
         && (
           isImmediateAccessSignup()
@@ -125,7 +143,8 @@ service cloud.firestore {
             isLegacyAssignedStudent(resource.data)
             || sharesAssignmentGroup(resource.data)
           ));
-      allow update, delete: if isAdmin();
+      allow update: if isAdmin() || canSelfActivateLegacyAdmin(userId);
+      allow delete: if isAdmin();
     }
 
     match /outpasses/{outpassId} {

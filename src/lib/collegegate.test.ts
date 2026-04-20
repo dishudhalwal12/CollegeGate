@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildWhatsAppLink,
   buildRegistrationProfile,
   buildCsv,
   createAssignmentKey,
+  getOutpassDisciplineSignal,
   isOutpassOverdue,
   resolveAssignedWarden,
   serializeUser,
@@ -101,7 +103,7 @@ describe("collegegate domain helpers", () => {
     expect(summary.completed).toBe(1);
   });
 
-  it("creates active student, warden, and guard signups while keeping admin pending", () => {
+  it("creates active signups for every role, including admin", () => {
     const wardenRegistration = buildRegistrationProfile(
       {
         ...baseRegistration,
@@ -121,13 +123,15 @@ describe("collegegate domain helpers", () => {
     expect(wardenRegistration.sessionRole).toBe("warden");
     expect(wardenRegistration.userProfile.role).toBe("warden");
     expect(wardenRegistration.userProfile.isActive).toBe(true);
-    expect(wardenRegistration.userProfile.requestedRole).toBeUndefined();
+    expect("requestedRole" in wardenRegistration.userProfile).toBe(false);
     expect(wardenRegistration.userProfile.assignmentKey).toBe("block-a");
 
-    expect(adminRegistration.sessionRole).toBe("pending");
-    expect(adminRegistration.userProfile.role).toBe("pending");
-    expect(adminRegistration.userProfile.isActive).toBe(false);
-    expect(adminRegistration.userProfile.requestedRole).toBe("admin");
+    expect(adminRegistration.sessionRole).toBe("admin");
+    expect(adminRegistration.userProfile.role).toBe("admin");
+    expect(adminRegistration.userProfile.isActive).toBe(true);
+    expect("requestedRole" in adminRegistration.userProfile).toBe(false);
+    expect(adminRegistration.userProfile.passBlocked).toBe(false);
+    expect(adminRegistration.userProfile.penaltyCount).toBe(0);
   });
 
   it("normalizes assignment keys and derives them for legacy user records", () => {
@@ -199,5 +203,44 @@ describe("collegegate domain helpers", () => {
     expect(csv).toContain("Student");
     expect(csv).toContain("Maanas Chandra");
     expect(csv).toContain("Awaiting Warden Approval");
+  });
+
+  it("flags curfew and overdue discipline signals only after the student exits", () => {
+    const overdueSignal = getOutpassDisciplineSignal(
+      {
+        status: "exited",
+        expectedReturnAt: "2026-04-15T14:00:00.000Z",
+        returnedAt: undefined,
+      },
+      { curfewTime: "21:00" },
+      new Date("2026-04-15T22:00:00.000Z"),
+    );
+    const curfewSignal = getOutpassDisciplineSignal(
+      {
+        status: "returned",
+        expectedReturnAt: "2026-04-15T14:00:00+05:30",
+        returnedAt: "2026-04-15T21:45:00+05:30",
+      },
+      { curfewTime: "21:00" },
+    );
+    const unusedApproval = getOutpassDisciplineSignal(
+      {
+        status: "approved",
+        expectedReturnAt: "2026-04-15T14:00:00.000Z",
+        returnedAt: undefined,
+      },
+      { curfewTime: "21:00" },
+      new Date("2026-04-15T22:00:00.000Z"),
+    );
+
+    expect(overdueSignal.overdueOpen).toBe(true);
+    expect(overdueSignal.outsideAfterCurfew).toBe(true);
+    expect(curfewSignal.curfewViolation).toBe(true);
+    expect(unusedApproval.hasViolation).toBe(false);
+  });
+
+  it("builds a WhatsApp deep link from a student phone number", () => {
+    const link = buildWhatsAppLink("98765 43210", "Late return warning");
+    expect(link).toBe("https://wa.me/919876543210?text=Late%20return%20warning");
   });
 });

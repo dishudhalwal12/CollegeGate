@@ -372,10 +372,10 @@ export async function getAdminDashboard(session: AuthSession) {
   ]);
 
   return {
-    outpasses: sortByCreated(outpasses).slice(0, 16),
+    outpasses: sortByCreated(outpasses),
     users: users.sort((left, right) => left.name.localeCompare(right.name)),
     config,
-    gateLogsById: new Map(gateLogs.map((log) => [log.outpassId, log])),
+    gateLogs: gateLogs.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
     summary: summarizeOutpasses(outpasses),
   };
 }
@@ -392,6 +392,14 @@ export async function createOutpass(session: AuthSession, payload: unknown) {
 
   if (!student.isActive) {
     throw new Error("This account is inactive.");
+  }
+
+  if (student.passBlocked) {
+    throw new Error(
+      student.passBlockReason
+        ? `Outpass access is blocked: ${student.passBlockReason}`
+        : "Outpass access is blocked by the admin.",
+    );
   }
 
   const assignedWarden = await resolveStudentWarden(session.authToken, student);
@@ -520,7 +528,17 @@ export async function scanOutpass(session: AuthSession, payload: unknown) {
   const outpass = serializeOutpass(matches[0].id, matches[0].data);
   const now = new Date().toISOString();
 
-  if (outpass.status === "approved") {
+  if (input.gateAction === "exit") {
+    if (outpass.status !== "approved") {
+      if (outpass.status === "exited") {
+        throw new Error(
+          "This student is already marked outside. Use the entry action when they return.",
+        );
+      }
+
+      throw new Error("Only approved passes can be scanned at the exit gate.");
+    }
+
     const exitUpdates = {
       status: "exited",
       exitAt: now,
@@ -564,7 +582,7 @@ export async function scanOutpass(session: AuthSession, payload: unknown) {
 
     return {
       nextStatus: "exited",
-      message: `${outpass.studentName} marked as exited.`,
+      message: `${outpass.studentName} marked as exited through the gate.`,
     };
   }
 
@@ -595,8 +613,12 @@ export async function scanOutpass(session: AuthSession, payload: unknown) {
 
     return {
       nextStatus: "returned",
-      message: `${outpass.studentName} marked as returned.`,
+      message: `${outpass.studentName} marked as returned through the gate.`,
     };
+  }
+
+  if (outpass.status === "approved") {
+    throw new Error("This pass has not been used for exit yet. Use the exit action first.");
   }
 
   throw new Error("This pass is no longer active at the gate.");
@@ -640,6 +662,26 @@ export async function updateUserAccess(
 
   if (input.requestedRole !== undefined) {
     updates.requestedRole = input.requestedRole || null;
+  }
+
+  if (input.passBlocked !== undefined) {
+    updates.passBlocked = input.passBlocked;
+  }
+
+  if (input.passBlockReason !== undefined) {
+    updates.passBlockReason = input.passBlockReason || null;
+  }
+
+  if (input.penaltyCount !== undefined) {
+    updates.penaltyCount = input.penaltyCount;
+  }
+
+  if (input.lastPenaltyReason !== undefined) {
+    updates.lastPenaltyReason = input.lastPenaltyReason || null;
+  }
+
+  if (input.lastPenaltyAt !== undefined) {
+    updates.lastPenaltyAt = input.lastPenaltyAt || null;
   }
 
   if (Object.keys(updates).length === 0) {

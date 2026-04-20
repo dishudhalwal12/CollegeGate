@@ -4,7 +4,7 @@ import { z } from "zod";
 export const assignableRoles = ["student", "warden", "guard", "admin"] as const;
 export type AssignableRole = (typeof assignableRoles)[number];
 
-export const instantAccessRoles = ["student", "warden", "guard"] as const;
+export const instantAccessRoles = ["student", "warden", "guard", "admin"] as const;
 export type InstantAccessRole = (typeof instantAccessRoles)[number];
 
 export const roles = [...assignableRoles, "pending"] as const;
@@ -19,6 +19,9 @@ export const statuses = [
 ] as const;
 export type OutpassStatus = (typeof statuses)[number];
 
+export const gateActions = ["exit", "entry"] as const;
+export type GateAction = (typeof gateActions)[number];
+
 export interface UserProfile {
   uid: string;
   name: string;
@@ -32,6 +35,11 @@ export interface UserProfile {
   wardenId?: string;
   wardenName?: string;
   isActive: boolean;
+  passBlocked: boolean;
+  passBlockReason?: string;
+  penaltyCount: number;
+  lastPenaltyReason?: string;
+  lastPenaltyAt?: string;
   createdAt?: string;
 }
 
@@ -88,6 +96,15 @@ export interface DashboardSummary {
   completed: number;
 }
 
+export interface OutpassDisciplineSignal {
+  overdueOpen: boolean;
+  lateReturn: boolean;
+  curfewViolation: boolean;
+  outsideAfterCurfew: boolean;
+  minutesLate: number;
+  hasViolation: boolean;
+}
+
 export type SessionUser = UserProfile;
 
 export const defaultSystemConfig: SystemConfig = {
@@ -121,6 +138,7 @@ export const decisionSchema = z.object({
 
 export const scanSchema = z.object({
   qrToken: z.string().trim().min(8).max(200),
+  gateAction: z.enum(gateActions),
 });
 
 export const configSchema = z.object({
@@ -139,12 +157,22 @@ export const userAccessUpdateSchema = z
     isActive: z.boolean().optional(),
     role: z.enum(roles).optional(),
     requestedRole: z.enum(assignableRoles).optional().or(z.literal("")),
+    passBlocked: z.boolean().optional(),
+    passBlockReason: z.string().trim().max(180).optional().or(z.literal("")),
+    penaltyCount: z.number().int().min(0).max(99).optional(),
+    lastPenaltyReason: z.string().trim().max(240).optional().or(z.literal("")),
+    lastPenaltyAt: z.string().datetime().optional().or(z.literal("")),
   })
   .refine(
     (value) =>
       value.isActive !== undefined ||
       value.role !== undefined ||
-      value.requestedRole !== undefined,
+      value.requestedRole !== undefined ||
+      value.passBlocked !== undefined ||
+      value.passBlockReason !== undefined ||
+      value.penaltyCount !== undefined ||
+      value.lastPenaltyReason !== undefined ||
+      value.lastPenaltyAt !== undefined,
     {
       message: "Provide at least one user access field to update.",
     },
@@ -170,25 +198,21 @@ export function buildRegistrationProfile(
   input: z.infer<typeof registerProfileSchema>,
   timestamp = new Date().toISOString(),
 ) {
-  const needsAdminApproval = input.role === "admin";
-  const sessionRole: UserRole = needsAdminApproval ? "pending" : input.role;
-
   return {
-    sessionRole,
-    message: needsAdminApproval
-      ? "Your admin access request has been submitted for approval."
-      : `Your ${input.role} account is ready.`,
+    sessionRole: input.role,
+    message: `Your ${input.role} account is ready.`,
     userProfile: {
       name: input.name,
       email: input.email,
-      role: sessionRole,
+      role: input.role,
       department: input.department,
       hostelBlock: input.hostelBlock,
       assignmentKey: createAssignmentKey(input.hostelBlock),
       phone: input.phone,
-      isActive: !needsAdminApproval,
+      isActive: true,
+      passBlocked: false,
+      penaltyCount: 0,
       createdAt: timestamp,
-      ...(needsAdminApproval ? { requestedRole: "admin" as const } : {}),
     },
   };
 }
@@ -242,6 +266,11 @@ export function serializeUser(uid: string, data: Record<string, unknown>): UserP
     wardenId: data.wardenId ? String(data.wardenId) : undefined,
     wardenName: data.wardenName ? String(data.wardenName) : undefined,
     isActive: Boolean(data.isActive ?? true),
+    passBlocked: Boolean(data.passBlocked ?? false),
+    passBlockReason: data.passBlockReason ? String(data.passBlockReason) : undefined,
+    penaltyCount: Number(data.penaltyCount ?? 0),
+    lastPenaltyReason: data.lastPenaltyReason ? String(data.lastPenaltyReason) : undefined,
+    lastPenaltyAt: data.lastPenaltyAt ? String(data.lastPenaltyAt) : undefined,
     createdAt: data.createdAt ? String(data.createdAt) : undefined,
   };
 }
@@ -350,6 +379,74 @@ export function getStatusTone(status: OutpassStatus, overdue = false) {
     default:
       return "warning";
   }
+}
+
+export function createCurfewCutoff(referenceTime: string, curfewTime: string) {
+  const [curfewHour, curfewMinute] = curfewTime.split(":").map(Number);
+  const cutoff = parseISO(referenceTime);
+  cutoff.setHours(curfewHour, curfewMinute, 0, 0);
+  return cutoff;
+}
+
+export function getOutpassDisciplineSignal(
+  outpass: Pick<OutpassRecord, "status" | "expectedReturnAt" | "returnedAt">,
+  config: Pick<SystemConfig, "curfewTime">,
+  now = new Date(),
+): OutpassDisciplineSignal {
+  const expectedReturn = parseISO(outpass.expectedReturnAt);
+  const returnedAt = outpass.returnedAt ? parseISO(outpass.returnedAt) : null;
+  const overdueOpen =
+    !returnedAt &&
+    outpass.status === "exited" &&
+    isAfter(now, expectedReturn);
+  const lateReturn = Boolean(returnedAt && isAfter(returnedAt, expectedReturn));
+  const curfewReference = outpass.returnedAt ?? outpass.expectedReturnAt;
+  const curfewViolation = Boolean(
+    returnedAt && isAfter(returnedAt, createCurfewCutoff(curfewReference, config.curfewTime)),
+  );
+  const outsideAfterCurfew =
+    !returnedAt &&
+    outpass.status === "exited" &&
+    isAfter(now, createCurfewCutoff(curfewReference, config.curfewTime));
+  const minutesLate =
+    lateReturn && returnedAt ? Math.max(differenceInMinutes(returnedAt, expectedReturn), 0) : 0;
+
+  return {
+    overdueOpen,
+    lateReturn,
+    curfewViolation,
+    outsideAfterCurfew,
+    minutesLate,
+    hasViolation: overdueOpen || lateReturn || curfewViolation || outsideAfterCurfew,
+  };
+}
+
+export function normalizeWhatsAppNumber(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+
+  if (!digits) {
+    return null;
+  }
+
+  if (digits.length === 10) {
+    return `91${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("0")) {
+    return `91${digits.slice(1)}`;
+  }
+
+  return digits;
+}
+
+export function buildWhatsAppLink(phone: string, message: string) {
+  const normalizedPhone = normalizeWhatsAppNumber(phone);
+
+  if (!normalizedPhone) {
+    return null;
+  }
+
+  return `https://wa.me/${normalizedPhone}?text=${encodeURIComponent(message)}`;
 }
 
 export function validateRequestWindow(

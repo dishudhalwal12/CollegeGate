@@ -20,7 +20,7 @@ export default async function PendingApprovalPage() {
         <article className="hero-card">
           <p className="helper-copy">
             {isAdminRequest
-              ? "Your admin account has been created and is waiting for an administrator to approve it."
+              ? "This is a legacy admin request from the older approval flow. New admin accounts now activate immediately."
               : "This pending access request is still waiting for an administrator to finish the older approval flow."}
           </p>
           <div className="detail-grid">

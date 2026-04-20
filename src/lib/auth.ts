@@ -2,9 +2,9 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { type NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { getDocument } from "@/lib/firestore-rest";
+import { getDocument, patchDocument } from "@/lib/firestore-rest";
 import { refreshFirebaseIdToken, verifyFirebaseIdToken } from "@/lib/firebase-session";
-import { getLocalUser, shouldUseLocalStore } from "@/lib/local-store";
+import { getLocalUser, shouldUseLocalStore, upsertLocalUser } from "@/lib/local-store";
 import { serializeUser, type SessionUser, type UserRole } from "@/lib/collegegate";
 
 export const ID_TOKEN_COOKIE = "collegegate_id_token";
@@ -94,6 +94,29 @@ async function loadUserFromSession(
 
     if (!profile) {
       return null;
+    }
+
+    if (profile.role === "pending" && profile.requestedRole === "admin") {
+      const adminActivation = {
+        role: "admin",
+        isActive: true,
+        requestedRole: null,
+      } as const;
+
+      try {
+        await patchDocument(`users/${resolved.decoded.uid}`, adminActivation, resolved.token);
+      } catch (error) {
+        if (shouldUseLocalStore(error)) {
+          upsertLocalUser(resolved.decoded.uid, adminActivation);
+        }
+      }
+
+      profile = {
+        ...profile,
+        role: "admin",
+        isActive: true,
+        requestedRole: undefined,
+      };
     }
 
     if (!profile.isActive && profile.role !== "pending") {

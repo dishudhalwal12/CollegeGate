@@ -1,5 +1,3 @@
-@import "tailwindcss";
-
 :root {
   --background: #ead9bc;
   --background-soft: #d5be95;
@@ -14,25 +12,24 @@
   --success: #376c4b;
 }
 
-@theme inline {
-  --color-background: var(--paper);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-body);
-  --font-mono: var(--font-body);
-}
-
 * {
   box-sizing: border-box;
 }
 
 html {
+  min-height: 100%;
   scroll-behavior: smooth;
 }
 
 body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-body), sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   background-image:
     radial-gradient(circle at top left, rgba(255, 176, 59, 0.22), transparent 32%),
     radial-gradient(circle at 85% 18%, rgba(255, 245, 227, 0.72), transparent 24%),
@@ -383,6 +380,11 @@ button {
   min-height: 2.4rem;
   padding: 0.6rem 0.95rem;
   font-size: 0.82rem;
+}
+
+.wrap-row {
+  flex-wrap: wrap;
+  justify-content: flex-start;
 }
 
 .form-grid {

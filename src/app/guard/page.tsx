@@ -25,8 +25,8 @@ export default async function GuardPage() {
           />
           <article className="hero-card">
             <p className="helper-copy">
-              First scan marks exit. Second scan marks return. Overdue flags stay visible until the
-              student is checked back in.
+              Use Exit when a student leaves campus and Entry when the same student returns with
+              the same QR pass. Overdue flags stay visible until entry is confirmed.
             </p>
           </article>
         </div>

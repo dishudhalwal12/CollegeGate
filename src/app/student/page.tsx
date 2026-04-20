@@ -26,7 +26,18 @@ export default async function StudentPage() {
             title="Submit a New Outpass"
             kicker="Quick request form"
           />
-          <StudentRequestForm config={config} />
+          {student.passBlocked ? (
+            <article className="hero-card stack-sm">
+              <p className="inline-feedback danger">
+                Pass access is currently blocked by the admin.
+              </p>
+              <p className="helper-copy">
+                {student.passBlockReason ?? "Contact the admin or your warden before requesting a new outpass."}
+              </p>
+            </article>
+          ) : (
+            <StudentRequestForm config={config} />
+          )}
         </div>
         <div className="section-grid-side stack-sm">
           <SectionHeading title="Student Snapshot" kicker="Identity & live pass" />
@@ -45,7 +56,16 @@ export default async function StudentPage() {
                 <p className="micro-copy">Phone</p>
                 <p>{student.phone}</p>
               </div>
+              <div>
+                <p className="micro-copy">Penalty Count</p>
+                <p>{student.penaltyCount}</p>
+              </div>
             </div>
+            {student.lastPenaltyReason ? (
+              <p className="helper-copy">
+                Last penalty: {student.lastPenaltyReason}
+              </p>
+            ) : null}
             {activePass ? (
               <div className="stack-xs">
                 <p className="micro-copy">Current active pass</p>
