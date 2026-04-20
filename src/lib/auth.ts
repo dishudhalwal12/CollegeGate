@@ -4,6 +4,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { getDocument } from "@/lib/firestore-rest";
 import { refreshFirebaseIdToken, verifyFirebaseIdToken } from "@/lib/firebase-session";
+import { getLocalUser, shouldUseLocalStore } from "@/lib/local-store";
 import { serializeUser, type SessionUser, type UserRole } from "@/lib/collegegate";
 
 export const ID_TOKEN_COOKIE = "collegegate_id_token";
@@ -72,16 +73,28 @@ async function loadUserFromSession(
 ): Promise<AuthSession | null> {
   try {
     const resolved = await resolveVerifiedToken(idToken, refreshToken);
-    const userSnapshot = await getDocument<Record<string, unknown>>(
-      `users/${resolved.decoded.uid}`,
-      resolved.token,
-    );
+    let profile: SessionUser | null = null;
 
-    if (!userSnapshot) {
-      return null;
+    try {
+      const userSnapshot = await getDocument<Record<string, unknown>>(
+        `users/${resolved.decoded.uid}`,
+        resolved.token,
+      );
+
+      if (userSnapshot) {
+        profile = serializeUser(resolved.decoded.uid, userSnapshot.data);
+      }
+    } catch (error) {
+      if (!shouldUseLocalStore(error)) {
+        throw error;
+      }
     }
 
-    const profile = serializeUser(resolved.decoded.uid, userSnapshot.data);
+    profile ??= getLocalUser(resolved.decoded.uid);
+
+    if (!profile) {
+      return null;
+    }
 
     if (!profile.isActive && profile.role !== "pending") {
       return null;

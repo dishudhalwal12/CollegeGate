@@ -27,92 +27,181 @@ import {
   queryDocuments,
   setDocument,
 } from "@/lib/firestore-rest";
+import {
+  getFirstActiveLocalUser,
+  getLocalOutpass,
+  getLocalSystemConfig,
+  getLocalUser,
+  listLocalGateLogs,
+  listLocalOutpasses,
+  listLocalUsers,
+  readLocalStoreSnapshot,
+  setLocalSystemConfig,
+  shouldUseLocalStore,
+  upsertLocalGateLog,
+  upsertLocalOutpass,
+  upsertLocalUser,
+} from "@/lib/local-store";
 
 async function getUserProfile(authToken: string, uid: string) {
-  const snapshot = await getDocument<Record<string, unknown>>(`users/${uid}`, authToken);
+  try {
+    const snapshot = await getDocument<Record<string, unknown>>(`users/${uid}`, authToken);
 
-  if (!snapshot) {
-    throw new Error("The user profile was not found in Firestore.");
+    if (snapshot) {
+      return serializeUser(snapshot.id, snapshot.data);
+    }
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
   }
 
-  return serializeUser(snapshot.id, snapshot.data);
+  const localUser = getLocalUser(uid);
+
+  if (!localUser) {
+    throw new Error("The user profile was not found in CollegeGate.");
+  }
+
+  return localUser;
 }
 
 async function getSystemConfig(authToken: string): Promise<SystemConfig> {
-  const snapshot = await getDocument<Record<string, unknown>>("systemConfig/campus", authToken);
+  try {
+    const snapshot = await getDocument<Record<string, unknown>>("systemConfig/campus", authToken);
 
-  if (!snapshot) {
-    return defaultSystemConfig;
+    if (snapshot) {
+      return {
+        ...defaultSystemConfig,
+        ...(snapshot.data as Partial<SystemConfig>),
+      };
+    }
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
   }
 
-  return {
-    ...defaultSystemConfig,
-    ...(snapshot.data as Partial<SystemConfig>),
-  };
+  return getLocalSystemConfig();
 }
 
 async function getUsers(authToken: string) {
-  const snapshots = await listDocuments<Record<string, unknown>>("users", authToken);
-  return snapshots.map((document) => serializeUser(document.id, document.data));
+  try {
+    const snapshots = await listDocuments<Record<string, unknown>>("users", authToken);
+    return snapshots.map((document) => serializeUser(document.id, document.data));
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+  }
+
+  return listLocalUsers();
 }
 
 async function getUsersForWarden(authToken: string, wardenId: string) {
-  const snapshots = await queryDocuments<Record<string, unknown>>(
-    "users",
-    authToken,
-    [
-      { field: "wardenId", value: wardenId },
-      { field: "role", value: "student" },
-    ],
-    200,
-  );
+  try {
+    const snapshots = await queryDocuments<Record<string, unknown>>(
+      "users",
+      authToken,
+      [
+        { field: "wardenId", value: wardenId },
+        { field: "role", value: "student" },
+      ],
+      200,
+    );
 
-  return snapshots.map((document) => serializeUser(document.id, document.data));
+    return snapshots.map((document) => serializeUser(document.id, document.data));
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+  }
+
+  return listLocalUsers().filter(
+    (user) => user.role === "student" && user.wardenId === wardenId,
+  );
 }
 
 async function getOutpasses(authToken: string) {
-  const snapshots = await listDocuments<Record<string, unknown>>("outpasses", authToken);
-  return snapshots.map((document) => serializeOutpass(document.id, document.data));
+  try {
+    const snapshots = await listDocuments<Record<string, unknown>>("outpasses", authToken);
+    return snapshots.map((document) => serializeOutpass(document.id, document.data));
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+  }
+
+  return listLocalOutpasses();
 }
 
 async function getOutpassesForStudent(authToken: string, uid: string) {
-  const snapshots = await queryDocuments<Record<string, unknown>>(
-    "outpasses",
-    authToken,
-    [{ field: "studentId", value: uid }],
-    200,
-  );
+  try {
+    const snapshots = await queryDocuments<Record<string, unknown>>(
+      "outpasses",
+      authToken,
+      [{ field: "studentId", value: uid }],
+      200,
+    );
 
-  return snapshots.map((document) => serializeOutpass(document.id, document.data));
+    return snapshots.map((document) => serializeOutpass(document.id, document.data));
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+  }
+
+  return listLocalOutpasses().filter((outpass) => outpass.studentId === uid);
 }
 
 async function getOutpassesForWarden(authToken: string, uid: string) {
-  const snapshots = await queryDocuments<Record<string, unknown>>(
-    "outpasses",
-    authToken,
-    [{ field: "assignedWardenId", value: uid }],
-    200,
-  );
+  try {
+    const snapshots = await queryDocuments<Record<string, unknown>>(
+      "outpasses",
+      authToken,
+      [{ field: "assignedWardenId", value: uid }],
+      200,
+    );
 
-  return snapshots.map((document) => serializeOutpass(document.id, document.data));
+    return snapshots.map((document) => serializeOutpass(document.id, document.data));
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+  }
+
+  return listLocalOutpasses().filter((outpass) => outpass.assignedWardenId === uid);
 }
 
 async function getOutpassById(authToken: string, outpassId: string) {
-  const snapshot = await getDocument<Record<string, unknown>>(
-    `outpasses/${outpassId}`,
-    authToken,
-  );
+  try {
+    const snapshot = await getDocument<Record<string, unknown>>(
+      `outpasses/${outpassId}`,
+      authToken,
+    );
 
-  if (!snapshot) {
-    return null;
+    if (snapshot) {
+      return serializeOutpass(snapshot.id, snapshot.data);
+    }
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
   }
 
-  return serializeOutpass(snapshot.id, snapshot.data);
+  return getLocalOutpass(outpassId);
 }
 
 async function getGateLogs(authToken: string) {
-  const snapshots = await listDocuments<Record<string, unknown>>("gateLogs", authToken);
-  return snapshots.map((document) => serializeGateLog(document.id, document.data));
+  try {
+    const snapshots = await listDocuments<Record<string, unknown>>("gateLogs", authToken);
+    return snapshots.map((document) => serializeGateLog(document.id, document.data));
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+  }
+
+  return listLocalGateLogs();
 }
 
 export async function getStudentDashboard(session: AuthSession) {
@@ -202,7 +291,18 @@ export async function createOutpass(session: AuthSession, payload: unknown) {
   }
 
   if (!student.wardenId || !student.wardenName) {
-    throw new Error("Your account is waiting for warden assignment before you can request an outpass.");
+    const fallbackWarden = getFirstActiveLocalUser("warden");
+
+    if (fallbackWarden) {
+      student.wardenId = fallbackWarden.uid;
+      student.wardenName = fallbackWarden.name;
+      upsertLocalUser(student.uid, {
+        wardenId: student.wardenId,
+        wardenName: student.wardenName,
+      });
+    } else {
+      throw new Error("Your account is waiting for warden assignment before you can request an outpass.");
+    }
   }
 
   validateRequestWindow(input, config);
@@ -226,7 +326,15 @@ export async function createOutpass(session: AuthSession, payload: unknown) {
     updatedAt: timestamp,
   };
 
-  await setDocument(`outpasses/${outpassId}`, request, session.authToken);
+  try {
+    await setDocument(`outpasses/${outpassId}`, request, session.authToken);
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+
+    upsertLocalOutpass(outpassId, request);
+  }
   return { id: outpassId, ...request };
 }
 
@@ -253,28 +361,47 @@ export async function decideOutpass(
   const timestamp = new Date().toISOString();
   const nextStatus = input.action === "approve" ? "approved" : "rejected";
 
-  await patchDocument(
-    `outpasses/${outpassId}`,
-    {
-      status: nextStatus,
-      approverRemark: input.remark,
-      approvedAt: input.action === "approve" ? timestamp : null,
-      rejectedAt: input.action === "reject" ? timestamp : null,
-      qrToken: input.action === "approve" ? `collegegate:${outpassId}:${randomUUID()}` : null,
-      updatedAt: timestamp,
-    },
-    session.authToken,
-  );
+  const updates = {
+    status: nextStatus,
+    approverRemark: input.remark,
+    approvedAt: input.action === "approve" ? timestamp : null,
+    rejectedAt: input.action === "reject" ? timestamp : null,
+    qrToken: input.action === "approve" ? `collegegate:${outpassId}:${randomUUID()}` : null,
+    updatedAt: timestamp,
+  };
+
+  try {
+    await patchDocument(`outpasses/${outpassId}`, updates, session.authToken);
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+
+    upsertLocalOutpass(outpassId, updates);
+  }
 }
 
 export async function scanOutpass(session: AuthSession, payload: unknown) {
   const input = parseJson(payload, scanSchema);
-  const matches = await queryDocuments<Record<string, unknown>>(
-    "outpasses",
-    session.authToken,
-    [{ field: "qrToken", value: input.qrToken }],
-    1,
-  );
+  let matches: Array<{ id: string; data: Record<string, unknown> }> = [];
+
+  try {
+    matches = await queryDocuments<Record<string, unknown>>(
+      "outpasses",
+      session.authToken,
+      [{ field: "qrToken", value: input.qrToken }],
+      1,
+    );
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+
+    matches = listLocalOutpasses()
+      .filter((outpass) => outpass.qrToken === input.qrToken)
+      .slice(0, 1)
+      .map((outpass) => ({ id: outpass.id, data: outpass as unknown as Record<string, unknown> }));
+  }
 
   if (matches.length === 0) {
     throw new Error("No approved pass matches that QR token.");
@@ -284,15 +411,21 @@ export async function scanOutpass(session: AuthSession, payload: unknown) {
   const now = new Date().toISOString();
 
   if (outpass.status === "approved") {
-    await patchDocument(
-      `outpasses/${outpass.id}`,
-      {
-        status: "exited",
-        exitAt: now,
-        updatedAt: now,
-      },
-      session.authToken,
-    );
+    const exitUpdates = {
+      status: "exited",
+      exitAt: now,
+      updatedAt: now,
+    };
+
+    try {
+      await patchDocument(`outpasses/${outpass.id}`, exitUpdates, session.authToken);
+    } catch (error) {
+      if (!shouldUseLocalStore(error)) {
+        throw error;
+      }
+
+      upsertLocalOutpass(outpass.id, exitUpdates);
+    }
 
     const gateLog: GateLog = {
       id: outpass.id,
@@ -305,11 +438,19 @@ export async function scanOutpass(session: AuthSession, payload: unknown) {
       updatedAt: now,
     };
 
-    await setDocument(
-      `gateLogs/${outpass.id}`,
-      gateLog as unknown as Record<string, unknown>,
-      session.authToken,
-    );
+    try {
+      await setDocument(
+        `gateLogs/${outpass.id}`,
+        gateLog as unknown as Record<string, unknown>,
+        session.authToken,
+      );
+    } catch (error) {
+      if (!shouldUseLocalStore(error)) {
+        throw error;
+      }
+
+      upsertLocalGateLog(outpass.id, gateLog as unknown as Record<string, unknown>);
+    }
 
     return {
       nextStatus: "exited",
@@ -318,26 +459,29 @@ export async function scanOutpass(session: AuthSession, payload: unknown) {
   }
 
   if (outpass.status === "exited") {
-    await patchDocument(
-      `outpasses/${outpass.id}`,
-      {
-        status: "returned",
-        returnedAt: now,
-        updatedAt: now,
-      },
-      session.authToken,
-    );
+    const returnUpdates = {
+      status: "returned",
+      returnedAt: now,
+      updatedAt: now,
+    };
+    const gateUpdates = {
+      returnAt: now,
+      scannedByGuardId: session.uid,
+      scannedByGuardName: session.name,
+      updatedAt: now,
+    };
 
-    await patchDocument(
-      `gateLogs/${outpass.id}`,
-      {
-        returnAt: now,
-        scannedByGuardId: session.uid,
-        scannedByGuardName: session.name,
-        updatedAt: now,
-      },
-      session.authToken,
-    );
+    try {
+      await patchDocument(`outpasses/${outpass.id}`, returnUpdates, session.authToken);
+      await patchDocument(`gateLogs/${outpass.id}`, gateUpdates, session.authToken);
+    } catch (error) {
+      if (!shouldUseLocalStore(error)) {
+        throw error;
+      }
+
+      upsertLocalOutpass(outpass.id, returnUpdates);
+      upsertLocalGateLog(outpass.id, gateUpdates);
+    }
 
     return {
       nextStatus: "returned",
@@ -352,14 +496,20 @@ export async function updateSystemConfig(session: AuthSession, payload: unknown)
   const input = parseJson(payload, configSchema);
   const timestamp = new Date().toISOString();
 
-  await patchDocument(
-    "systemConfig/campus",
-    {
-      ...input,
-      updatedAt: timestamp,
-    },
-    session.authToken,
-  );
+  const updates = {
+    ...input,
+    updatedAt: timestamp,
+  };
+
+  try {
+    await patchDocument("systemConfig/campus", updates, session.authToken);
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+
+    setLocalSystemConfig(updates);
+  }
 }
 
 export async function updateUserAccess(
@@ -386,7 +536,15 @@ export async function updateUserAccess(
     throw new Error("No user access updates were provided.");
   }
 
-  await patchDocument(`users/${userId}`, updates, session.authToken);
+  try {
+    await patchDocument(`users/${userId}`, updates, session.authToken);
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+
+    upsertLocalUser(userId, updates);
+  }
 }
 
 export async function buildReportPayload(session: AuthSession) {
@@ -424,18 +582,8 @@ export async function buildPdfReport(records: OutpassRecord[]) {
   return Buffer.from(pdf.output("arraybuffer"));
 }
 
-export async function buildSeedPreview(session: AuthSession) {
-  const [users, outpasses, config] = await Promise.all([
-    getUsers(session.authToken),
-    getOutpasses(session.authToken),
-    getSystemConfig(session.authToken),
-  ]);
-
-  return {
-    users,
-    outpasses,
-    config,
-  };
+export async function buildSeedPreview() {
+  return readLocalStoreSnapshot();
 }
 
 export type { UserProfile };

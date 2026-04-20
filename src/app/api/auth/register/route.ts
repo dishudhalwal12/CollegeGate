@@ -3,6 +3,12 @@ import { ApiError, withApiError } from "@/lib/auth";
 import { getDocument, setDocument } from "@/lib/firestore-rest";
 import { verifyFirebaseIdToken } from "@/lib/firebase-session";
 import { registerProfileSchema } from "@/lib/collegegate";
+import {
+  countActiveLocalAdmins,
+  getLocalUser,
+  shouldUseLocalStore,
+  upsertLocalUser,
+} from "@/lib/local-store";
 
 export async function POST(request: NextRequest) {
   try {
@@ -31,22 +37,34 @@ export async function POST(request: NextRequest) {
       throw new ApiError(400, "The signed-in Firebase account email does not match the form.");
     }
 
-    const existingProfile = await getDocument<Record<string, unknown>>(
-      `users/${decoded.uid}`,
-      idToken,
-    );
+    let existingProfile: Record<string, unknown> | null = null;
+
+    try {
+      const firestoreProfile = await getDocument<Record<string, unknown>>(
+        `users/${decoded.uid}`,
+        idToken,
+      );
+      existingProfile = firestoreProfile?.data ?? null;
+    } catch (error) {
+      if (!shouldUseLocalStore(error)) {
+        throw error;
+      }
+    }
+
+    existingProfile ??= (getLocalUser(decoded.uid) as unknown as Record<string, unknown> | null);
 
     if (existingProfile) {
       throw new ApiError(409, "This Firebase account is already registered in CollegeGate.");
     }
 
     const timestamp = new Date().toISOString();
-    const needsApproval = input.role !== "student";
+    const isBootstrapAdmin = input.role === "admin" && countActiveLocalAdmins() === 0;
+    const needsApproval = input.role !== "student" && !isBootstrapAdmin;
 
     const userProfile = {
       name: input.name,
       email: input.email,
-      role: needsApproval ? "pending" : "student",
+      role: isBootstrapAdmin ? "admin" : needsApproval ? "pending" : "student",
       department: input.department,
       hostelBlock: input.hostelBlock,
       phone: input.phone,
@@ -55,12 +73,22 @@ export async function POST(request: NextRequest) {
       ...(needsApproval ? { requestedRole: input.role } : {}),
     };
 
-    await setDocument(`users/${decoded.uid}`, userProfile, idToken);
+    try {
+      await setDocument(`users/${decoded.uid}`, userProfile, idToken);
+    } catch (error) {
+      if (!shouldUseLocalStore(error)) {
+        throw error;
+      }
+
+      upsertLocalUser(decoded.uid, userProfile);
+    }
 
     return NextResponse.json({
       ok: true,
-      role: needsApproval ? "pending" : "student",
-      message: needsApproval
+      role: isBootstrapAdmin ? "admin" : needsApproval ? "pending" : "student",
+      message: isBootstrapAdmin
+        ? "Bootstrap admin account created."
+        : needsApproval
         ? `Your ${input.role} access request has been submitted for approval.`
         : "Your student account is ready.",
     });
