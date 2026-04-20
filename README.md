@@ -9,7 +9,8 @@ CollegeGate is a hostel outpass management app built with Next.js and Firebase A
 - A Firebase project with:
   - Email/Password sign-in enabled
   - Firestore enabled
-  - A Firebase Admin service account
+  - Firestore rules deployed from `firestore.rules`
+  - A Firebase Admin service account if you want to run the demo seed script
 
 ## Local Setup
 
@@ -47,13 +48,19 @@ You can also use `GOOGLE_APPLICATION_CREDENTIALS` instead of `FIREBASE_CLIENT_EM
 
 If you paste the private key directly into `.env`, keep newline characters escaped as `\n`.
 
-4. Seed demo data:
+4. Deploy Firestore rules:
+
+```bash
+firebase deploy --only firestore:rules
+```
+
+5. Optional: seed demo data:
 
 ```bash
 npm run seed
 ```
 
-5. Start the app:
+6. Start the app:
 
 ```bash
 npm run dev
@@ -61,7 +68,16 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+## Registration Model
+
+- Students can self-register and start using the app immediately.
+- Warden, guard, and admin signups are recorded as pending requests until an admin approves them.
+- Admin SDK credentials are no longer required for normal app sign-in or protected routes.
+- Admin SDK credentials are still required for `npm run seed`.
+
 ## Demo Accounts
+
+If you run the seed script, these demo accounts are created:
 
 - Student: `student@collegegate.demo` / `CollegeGate@123`
 - Warden: `warden@collegegate.demo` / `CollegeGate@123`
@@ -82,4 +98,6 @@ npm run build
 ## Notes
 
 - `.env` is intentionally ignored and should be shared separately.
-- The repository includes a built-in fallback public Firebase web config for the current CollegeGate Firebase project, but the server-side admin credentials are still required for login, session creation, Firestore writes, and seeding.
+- The repository includes a built-in fallback public Firebase web config for the current CollegeGate Firebase project.
+- Normal auth and protected app routes use verified Firebase ID tokens plus Firestore security rules.
+- Seed scripts and any future Admin SDK workflows still require admin credentials.

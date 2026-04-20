@@ -10,28 +10,86 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid));
     }
 
+    function hasUserRecord() {
+      return signedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
     function role() {
-      return userRecord().data.role;
+      return hasUserRecord() ? userRecord().data.role : null;
+    }
+
+    function isActiveUser() {
+      return hasUserRecord() && userRecord().data.isActive == true;
     }
 
     function isAdmin() {
-      return signedIn() && role() == "admin";
+      return isActiveUser() && role() == "admin";
+    }
+
+    function isOwnProfile(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function isPendingRequest() {
+      return request.resource.data.role == "pending"
+        && request.resource.data.requestedRole in ["warden", "guard", "admin"];
+    }
+
+    function validSelfSignupKeys() {
+      return request.resource.data.keys().hasOnly([
+        "name",
+        "email",
+        "role",
+        "requestedRole",
+        "department",
+        "hostelBlock",
+        "phone",
+        "isActive",
+        "createdAt"
+      ]);
+    }
+
+    function validSelfSignupPayload() {
+      return validSelfSignupKeys()
+        && request.resource.data.name is string
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.department is string
+        && request.resource.data.hostelBlock is string
+        && request.resource.data.phone is string
+        && request.resource.data.createdAt is string
+        && (
+          (request.resource.data.role == "student"
+            && request.resource.data.isActive == true
+            && !request.resource.data.keys().hasAny(["requestedRole"]))
+          ||
+          (isPendingRequest() && request.resource.data.isActive == false)
+        );
     }
 
     match /users/{userId} {
-      allow read: if signedIn() && (request.auth.uid == userId || isAdmin());
-      allow write: if isAdmin();
+      allow create: if isOwnProfile(userId)
+        && !exists(/databases/$(database)/documents/users/$(userId))
+        && validSelfSignupPayload();
+      allow read: if isOwnProfile(userId)
+        || isAdmin()
+        || (isActiveUser()
+          && role() == "warden"
+          && resource.data.role == "student"
+          && resource.data.wardenId == request.auth.uid);
+      allow update, delete: if isAdmin();
     }
 
     match /outpasses/{outpassId} {
-      allow read: if signedIn() && (
+      allow read: if isActiveUser() && (
         isAdmin() ||
         role() == "guard" ||
         (role() == "student" && resource.data.studentId == request.auth.uid) ||
         (role() == "warden" && resource.data.assignedWardenId == request.auth.uid)
       );
-      allow create: if signedIn() && role() == "student" && request.resource.data.studentId == request.auth.uid;
-      allow update: if signedIn() && (
+      allow create: if isActiveUser()
+        && role() == "student"
+        && request.resource.data.studentId == request.auth.uid;
+      allow update: if isActiveUser() && (
         isAdmin() ||
         role() == "guard" ||
         (role() == "warden" && resource.data.assignedWardenId == request.auth.uid)
@@ -39,12 +97,12 @@ service cloud.firestore {
     }
 
     match /gateLogs/{logId} {
-      allow read: if signedIn() && (isAdmin() || role() == "guard" || role() == "warden");
-      allow write: if signedIn() && (isAdmin() || role() == "guard");
+      allow read: if isActiveUser() && (isAdmin() || role() == "guard" || role() == "warden");
+      allow write: if isActiveUser() && (isAdmin() || role() == "guard");
     }
 
     match /systemConfig/{configId} {
-      allow read: if signedIn();
+      allow read: if isActiveUser();
       allow write: if isAdmin();
     }
   }

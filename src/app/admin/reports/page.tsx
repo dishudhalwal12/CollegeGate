@@ -4,7 +4,7 @@ import { buildReportPayload } from "@/lib/data";
 
 export default async function AdminReportsPage() {
   const session = await requireSession("admin");
-  const records = await buildReportPayload();
+  const records = await buildReportPayload(session);
 
   return (
     <DashboardFrame session={session} eyebrow="Admin report room" title="Download And Review">

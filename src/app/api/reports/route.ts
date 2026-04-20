@@ -5,8 +5,8 @@ import { buildCsv } from "@/lib/collegegate";
 
 export async function GET(request: NextRequest) {
   try {
-    await assertApiRole(request, "admin");
-    const records = await buildReportPayload();
+    const session = await assertApiRole(request, "admin");
+    const records = await buildReportPayload(session);
     const format = request.nextUrl.searchParams.get("format") ?? "csv";
 
     if (format === "pdf") {

@@ -5,7 +5,7 @@ import { getGuardDashboard } from "@/lib/data";
 
 export default async function GuardScanPage() {
   const session = await requireSession("guard");
-  const { activeOutpasses } = await getGuardDashboard();
+  const { activeOutpasses } = await getGuardDashboard(session);
 
   return (
     <DashboardFrame session={session} eyebrow="Dedicated scan mode" title="QR Gate Station">

@@ -5,7 +5,7 @@ import { getWardenDashboard } from "@/lib/data";
 
 export default async function WardenPage() {
   const session = await requireSession("warden");
-  const { requests, summary, studentsById, history } = await getWardenDashboard(session.uid);
+  const { requests, summary, studentsById, history } = await getWardenDashboard(session);
 
   return (
     <DashboardFrame

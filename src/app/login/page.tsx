@@ -1,15 +1,7 @@
 import { redirect } from "next/navigation";
-import { ShieldCheck, TriangleAlert } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
 import { LoginForm } from "@/components/client-ui";
 import { getServerSession } from "@/lib/auth";
-import { hasAdminCredentials } from "@/lib/firebase-admin";
-
-const accounts = [
-  ["Student", "student@collegegate.demo", "CollegeGate@123"],
-  ["Warden", "warden@collegegate.demo", "CollegeGate@123"],
-  ["Guard", "guard@collegegate.demo", "CollegeGate@123"],
-  ["Admin", "admin@collegegate.demo", "CollegeGate@123"],
-] as const;
 
 export default async function LoginPage() {
   const session = await getServerSession();
@@ -24,21 +16,13 @@ export default async function LoginPage() {
         <section className="landing-section">
           <div className="hero-grid">
             <div className="section-grid-main stack-lg">
-              <p className="section-kicker">Seeded role access only</p>
-              <h1 className="dashboard-title">Enter CollegeGate</h1>
+              <p className="section-kicker">Production onboarding</p>
+              <h1 className="dashboard-title">Access CollegeGate</h1>
               <p className="hero-copy narrow">
-                Sign in with one of the seeded Firebase accounts to access the role-specific
-                dashboards. The login route exchanges the Firebase ID token for a secure session
-                cookie before redirecting you.
+                Create a real Firebase-backed account, choose the role you are requesting, and move
+                into the correct workflow. Student accounts activate immediately, while warden,
+                guard, and admin requests stay pending until approved.
               </p>
-
-              {!hasAdminCredentials ? (
-                <div className="inline-feedback danger">
-                  <TriangleAlert size={16} />
-                  Add Firebase Admin credentials in your environment before using the protected app
-                  routes or seed script.
-                </div>
-              ) : null}
 
               <LoginForm />
             </div>
@@ -47,19 +31,35 @@ export default async function LoginPage() {
               <article className="hero-card">
                 <div className="mock-pass-header">
                   <div>
-                    <p className="micro-copy">Demo credentials</p>
-                    <h2 className="card-title">Seeded Accounts</h2>
+                    <p className="micro-copy">Access model</p>
+                    <h2 className="card-title">Role Activation</h2>
                   </div>
                   <ShieldCheck size={28} />
                 </div>
                 <div className="timeline-list">
-                  {accounts.map(([label, email, password]) => (
-                    <div className="story-card" key={email}>
-                      <p className="micro-copy">{label}</p>
-                      <strong>{email}</strong>
-                      <p className="helper-copy">{password}</p>
-                    </div>
-                  ))}
+                  <div className="story-card">
+                    <p className="micro-copy">Student</p>
+                    <strong>Instant access</strong>
+                    <p className="helper-copy">
+                      Register, sign in, and start requesting outpasses right away.
+                    </p>
+                  </div>
+                  <div className="story-card">
+                    <p className="micro-copy">Warden / Guard / Admin</p>
+                    <strong>Approval required</strong>
+                    <p className="helper-copy">
+                      The signup flow records the requested role and safely holds access until an
+                      admin activates it.
+                    </p>
+                  </div>
+                  <div className="story-card">
+                    <p className="micro-copy">Seed script</p>
+                    <strong>Still uses Admin SDK</strong>
+                    <p className="helper-copy">
+                      Only demo seeding still needs Firebase Admin credentials; normal app auth no
+                      longer depends on them.
+                    </p>
+                  </div>
                 </div>
               </article>
             </div>

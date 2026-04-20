@@ -7,7 +7,7 @@ import { getStudentDashboard } from "@/lib/data";
 
 export default async function StudentPage() {
   const session = await requireSession("student");
-  const { student, requests, config, summary } = await getStudentDashboard(session.uid);
+  const { student, requests, config, summary } = await getStudentDashboard(session);
   const activePass = requests.find(
     (request) => request.status === "approved" || request.status === "exited",
   );

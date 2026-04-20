@@ -3,7 +3,11 @@
 import { useEffect, useEffectEvent, useId, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { FirebaseError } from "firebase/app";
-import { signInWithEmailAndPassword } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile,
+} from "firebase/auth";
 import {
   AlertCircle,
   LoaderCircle,
@@ -11,9 +15,42 @@ import {
   QrCode,
   ScanLine,
   ShieldCheck,
+  UserRoundPlus,
 } from "lucide-react";
 import { clientAuth } from "@/lib/firebase";
-import type { OutpassRecord, SystemConfig, UserProfile } from "@/lib/collegegate";
+import type {
+  AssignableRole,
+  OutpassRecord,
+  SystemConfig,
+  UserProfile,
+} from "@/lib/collegegate";
+
+const signupRoles: Array<{
+  value: AssignableRole;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: "student",
+    label: "Student",
+    detail: "Instant access to request, track, and show passes.",
+  },
+  {
+    value: "warden",
+    label: "Warden",
+    detail: "Approval-queue access stays pending until an admin approves it.",
+  },
+  {
+    value: "guard",
+    label: "Guard",
+    detail: "Gate scanner access is requested first, then activated by admin.",
+  },
+  {
+    value: "admin",
+    label: "Admin",
+    detail: "Control-room access is always held for manual approval.",
+  },
+] as const;
 
 async function readJson(response: Response) {
   const data = (await response.json().catch(() => ({}))) as {
@@ -29,6 +66,30 @@ async function readJson(response: Response) {
   return data;
 }
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  timeoutMs = 15000,
+) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "AbortError") {
+      throw new Error("The request timed out. Check your Firebase setup and try again.");
+    }
+
+    throw cause;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
 function toLoginErrorMessage(cause: unknown) {
   if (cause instanceof FirebaseError) {
     switch (cause.code) {
@@ -36,7 +97,7 @@ function toLoginErrorMessage(cause: unknown) {
       case "auth/invalid-email":
       case "auth/user-not-found":
       case "auth/wrong-password":
-        return "Invalid email or password. Use one of the seeded demo accounts shown on this page.";
+        return "Invalid email or password. Use a registered CollegeGate account.";
       case "auth/too-many-requests":
         return "Too many failed attempts. Wait a moment and try again.";
       case "auth/configuration-not-found":
@@ -53,18 +114,54 @@ function toLoginErrorMessage(cause: unknown) {
   return "Unable to sign in.";
 }
 
+function toRegistrationErrorMessage(cause: unknown) {
+  if (cause instanceof FirebaseError) {
+    switch (cause.code) {
+      case "auth/email-already-in-use":
+        return "That email is already registered. Try signing in instead.";
+      case "auth/invalid-email":
+        return "Enter a valid email address.";
+      case "auth/weak-password":
+        return "Choose a stronger password with at least 6 characters.";
+      case "auth/configuration-not-found":
+        return "Email/Password sign-in is not enabled for this Firebase project.";
+      default:
+        return cause.message;
+    }
+  }
+
+  if (cause instanceof Error) {
+    return cause.message;
+  }
+
+  return "Unable to create your account.";
+}
+
 export function LoginForm() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [mode, setMode] = useState<"signin" | "signup">("signup");
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [credentials, setCredentials] = useState({
-    email: "student@collegegate.demo",
-    password: "CollegeGate@123",
+    email: "",
+    password: "",
+  });
+  const [registration, setRegistration] = useState({
+    name: "",
+    email: "",
+    phone: "",
+    department: "",
+    hostelBlock: "",
+    password: "",
+    confirmPassword: "",
+    role: "student" as AssignableRole,
   });
 
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  function handleSignIn(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setMessage("");
 
     startTransition(async () => {
       try {
@@ -74,16 +171,19 @@ export function LoginForm() {
           credentials.password,
         );
         const idToken = await result.user.getIdToken();
-        const response = await fetch("/api/auth/session", {
+        const response = await fetchWithTimeout("/api/auth/session", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ idToken }),
+          body: JSON.stringify({
+            idToken,
+            refreshToken: result.user.refreshToken,
+          }),
         });
 
         const data = await readJson(response);
-        router.push(data.redirectTo ?? "/student");
+        router.push(data.redirectTo ?? "/");
         router.refresh();
       } catch (cause) {
         setError(toLoginErrorMessage(cause));
@@ -91,34 +191,308 @@ export function LoginForm() {
     });
   }
 
+  function handleSignUp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+
+    if (registration.password.length < 6) {
+      setError("Choose a password with at least 6 characters.");
+      return;
+    }
+
+    if (registration.password !== registration.confirmPassword) {
+      setError("Password and confirm password must match.");
+      return;
+    }
+
+    startTransition(async () => {
+      let shouldRollbackUser = true;
+
+      try {
+        const result = await createUserWithEmailAndPassword(
+          clientAuth,
+          registration.email,
+          registration.password,
+        );
+        await updateProfile(result.user, {
+          displayName: registration.name,
+        }).catch(() => undefined);
+
+        const idToken = await result.user.getIdToken(true);
+        await readJson(
+          await fetchWithTimeout("/api/auth/register", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              idToken,
+              name: registration.name,
+              email: registration.email,
+              phone: registration.phone,
+              department: registration.department,
+              hostelBlock: registration.hostelBlock,
+              role: registration.role,
+            }),
+          }),
+        );
+
+        shouldRollbackUser = false;
+
+        const sessionResponse = await fetchWithTimeout("/api/auth/session", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            idToken,
+            refreshToken: result.user.refreshToken,
+          }),
+        });
+
+        const data = await readJson(sessionResponse);
+        setMessage(
+          registration.role === "student"
+            ? "Your account is ready."
+            : "Your access request has been submitted for approval.",
+        );
+        router.push(data.redirectTo ?? "/");
+        router.refresh();
+      } catch (cause) {
+        if (shouldRollbackUser && clientAuth.currentUser) {
+          await clientAuth.currentUser.delete().catch(() => undefined);
+        }
+
+        setError(toRegistrationErrorMessage(cause));
+      }
+    });
+  }
+
+  const isStaffSignup = registration.role !== "student";
+
   return (
-    <form className="stack-sm" onSubmit={handleSubmit}>
-      <label className="form-field">
-        <span>Email</span>
-        <input
-          value={credentials.email}
-          onChange={(event) =>
-            setCredentials((current) => ({ ...current, email: event.target.value }))
-          }
-          type="email"
-          name="email"
-          autoComplete="email"
-          required
-        />
-      </label>
-      <label className="form-field">
-        <span>Password</span>
-        <input
-          value={credentials.password}
-          onChange={(event) =>
-            setCredentials((current) => ({ ...current, password: event.target.value }))
-          }
-          type="password"
-          name="password"
-          autoComplete="current-password"
-          required
-        />
-      </label>
+    <div className="stack-sm">
+      <div className="auth-switch">
+        <button
+          className={mode === "signup" ? "auth-switch-button active" : "auth-switch-button"}
+          type="button"
+          onClick={() => {
+            setMode("signup");
+            setError("");
+            setMessage("");
+          }}
+        >
+          Create Account
+        </button>
+        <button
+          className={mode === "signin" ? "auth-switch-button active" : "auth-switch-button"}
+          type="button"
+          onClick={() => {
+            setMode("signin");
+            setError("");
+            setMessage("");
+          }}
+        >
+          Sign In
+        </button>
+      </div>
+
+      {mode === "signin" ? (
+        <form className="stack-sm" onSubmit={handleSignIn}>
+          <label className="form-field">
+            <span>Email</span>
+            <input
+              value={credentials.email}
+              onChange={(event) =>
+                setCredentials((current) => ({ ...current, email: event.target.value }))
+              }
+              type="email"
+              name="email"
+              autoComplete="email"
+              required
+            />
+          </label>
+          <label className="form-field">
+            <span>Password</span>
+            <input
+              value={credentials.password}
+              onChange={(event) =>
+                setCredentials((current) => ({ ...current, password: event.target.value }))
+              }
+              type="password"
+              name="password"
+              autoComplete="current-password"
+              required
+            />
+          </label>
+
+          <button className="action-button" type="submit" disabled={isPending}>
+            {isPending ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
+            Enter CollegeGate
+          </button>
+        </form>
+      ) : (
+        <form className="stack-sm" onSubmit={handleSignUp}>
+          <div className="form-grid">
+            <label className="form-field">
+              <span>Full Name</span>
+              <input
+                value={registration.name}
+                onChange={(event) =>
+                  setRegistration((current) => ({ ...current, name: event.target.value }))
+                }
+                type="text"
+                name="name"
+                autoComplete="name"
+                required
+              />
+            </label>
+            <label className="form-field">
+              <span>Email</span>
+              <input
+                value={registration.email}
+                onChange={(event) =>
+                  setRegistration((current) => ({ ...current, email: event.target.value }))
+                }
+                type="email"
+                name="email"
+                autoComplete="email"
+                required
+              />
+            </label>
+            <label className="form-field">
+              <span>Phone</span>
+              <input
+                value={registration.phone}
+                onChange={(event) =>
+                  setRegistration((current) => ({ ...current, phone: event.target.value }))
+                }
+                type="tel"
+                name="phone"
+                autoComplete="tel"
+                required
+              />
+            </label>
+            <label className="form-field">
+              <span>Department</span>
+              <input
+                value={registration.department}
+                onChange={(event) =>
+                  setRegistration((current) => ({
+                    ...current,
+                    department: event.target.value,
+                  }))
+                }
+                type="text"
+                name="department"
+                required
+              />
+            </label>
+            <label className="form-field">
+              <span>Hostel Block / Duty Station</span>
+              <input
+                value={registration.hostelBlock}
+                onChange={(event) =>
+                  setRegistration((current) => ({
+                    ...current,
+                    hostelBlock: event.target.value,
+                  }))
+                }
+                type="text"
+                name="hostelBlock"
+                required
+              />
+            </label>
+            <label className="form-field">
+              <span>Password</span>
+              <input
+                value={registration.password}
+                onChange={(event) =>
+                  setRegistration((current) => ({
+                    ...current,
+                    password: event.target.value,
+                  }))
+                }
+                type="password"
+                name="password"
+                autoComplete="new-password"
+                required
+              />
+            </label>
+            <label className="form-field">
+              <span>Confirm Password</span>
+              <input
+                value={registration.confirmPassword}
+                onChange={(event) =>
+                  setRegistration((current) => ({
+                    ...current,
+                    confirmPassword: event.target.value,
+                  }))
+                }
+                type="password"
+                name="confirmPassword"
+                autoComplete="new-password"
+                required
+              />
+            </label>
+          </div>
+
+          <div className="stack-xs">
+            <span className="micro-copy">Choose your access</span>
+            <div className="role-picker">
+              {signupRoles.map((option) => (
+                <label
+                  className={
+                    registration.role === option.value
+                      ? "role-option active"
+                      : "role-option"
+                  }
+                  key={option.value}
+                >
+                  <input
+                    checked={registration.role === option.value}
+                    className="role-option-input"
+                    name="role"
+                    type="radio"
+                    value={option.value}
+                    onChange={(event) =>
+                      setRegistration((current) => ({
+                        ...current,
+                        role: event.target.value as AssignableRole,
+                      }))
+                    }
+                  />
+                  <div className="role-option-copy">
+                    <strong className="role-option-title">{option.label}</strong>
+                    <p className="role-option-detail">{option.detail}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {isStaffSignup ? (
+            <p className="inline-feedback">
+              <UserRoundPlus size={16} />
+              Staff and admin accounts are created as approval requests first. They unlock after an
+              admin reviews them.
+            </p>
+          ) : null}
+
+          <button className="action-button" type="submit" disabled={isPending}>
+            {isPending ? <LoaderCircle className="spin" size={16} /> : <UserRoundPlus size={16} />}
+            Create CollegeGate Account
+          </button>
+        </form>
+      )}
+
+      {message ? (
+        <p className="inline-feedback success">
+          <ShieldCheck size={16} />
+          {message}
+        </p>
+      ) : null}
 
       {error ? (
         <p className="inline-feedback danger">
@@ -126,12 +500,7 @@ export function LoginForm() {
           {error}
         </p>
       ) : null}
-
-      <button className="action-button" type="submit" disabled={isPending}>
-        {isPending ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />}
-        Enter CollegeGate
-      </button>
-    </form>
+    </div>
   );
 }
 
@@ -467,29 +836,85 @@ export function ConfigForm({ config }: { config: SystemConfig }) {
 export function UserStatusToggle({ user }: { user: UserProfile }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const nextState = !user.isActive;
+  const [selectedRole, setSelectedRole] = useState<AssignableRole>(
+    user.role === "pending" ? user.requestedRole ?? "student" : (user.role as AssignableRole),
+  );
+  const [error, setError] = useState("");
+  const isPendingApproval = user.role === "pending";
+
+  function updateAccess(payload: Record<string, unknown>) {
+    setError("");
+    startTransition(async () => {
+      try {
+        const response = await fetch(`/api/users/${user.uid}`, {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        await readJson(response);
+        router.refresh();
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "Unable to update access.");
+      }
+    });
+  }
 
   return (
-    <button
-      className={user.isActive ? "ghost-button small" : "action-button small"}
-      type="button"
-      disabled={isPending}
-      onClick={() =>
-        startTransition(async () => {
-          const response = await fetch(`/api/users/${user.uid}`, {
-            method: "PATCH",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ isActive: nextState }),
-          });
-          await readJson(response);
-          router.refresh();
-        })
-      }
-    >
-      {user.isActive ? "Deactivate" : "Activate"}
-    </button>
+    <div className="stack-xs">
+      {isPendingApproval ? (
+        <>
+          <label className="form-field">
+            <span>Approve As</span>
+            <select
+              value={selectedRole}
+              onChange={(event) => setSelectedRole(event.target.value as AssignableRole)}
+            >
+              {signupRoles.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="action-row">
+            <button
+              className="action-button small"
+              type="button"
+              disabled={isPending}
+              onClick={() =>
+                updateAccess({
+                  role: selectedRole,
+                  isActive: true,
+                  requestedRole: "",
+                })
+              }
+            >
+              Approve Access
+            </button>
+            <button
+              className="ghost-button small"
+              type="button"
+              disabled={isPending}
+              onClick={() => updateAccess({ isActive: false })}
+            >
+              Keep Pending
+            </button>
+          </div>
+        </>
+      ) : (
+        <button
+          className={user.isActive ? "ghost-button small" : "action-button small"}
+          type="button"
+          disabled={isPending}
+          onClick={() => updateAccess({ isActive: !user.isActive })}
+        >
+          {user.isActive ? "Deactivate" : "Activate"}
+        </button>
+      )}
+      {error ? <p className="inline-feedback danger">{error}</p> : null}
+    </div>
   );
 }
 

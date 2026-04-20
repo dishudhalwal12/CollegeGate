@@ -1,7 +1,10 @@
 import { differenceInMinutes, format, isAfter, parseISO } from "date-fns";
 import { z } from "zod";
 
-export const roles = ["student", "warden", "guard", "admin"] as const;
+export const assignableRoles = ["student", "warden", "guard", "admin"] as const;
+export type AssignableRole = (typeof assignableRoles)[number];
+
+export const roles = [...assignableRoles, "pending"] as const;
 export type UserRole = (typeof roles)[number];
 
 export const statuses = [
@@ -18,6 +21,7 @@ export interface UserProfile {
   name: string;
   email: string;
   role: UserRole;
+  requestedRole?: AssignableRole;
   department: string;
   hostelBlock: string;
   phone: string;
@@ -97,6 +101,15 @@ export const createRequestSchema = z.object({
   emergency: z.boolean().default(false),
 });
 
+export const registerProfileSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+  email: z.string().trim().email(),
+  role: z.enum(assignableRoles),
+  department: z.string().trim().min(2).max(80),
+  hostelBlock: z.string().trim().min(2).max(80),
+  phone: z.string().trim().min(7).max(24),
+});
+
 export const decisionSchema = z.object({
   action: z.enum(["approve", "reject"]),
   remark: z.string().trim().min(2).max(180),
@@ -117,16 +130,40 @@ export const userStatusSchema = z.object({
   isActive: z.boolean(),
 });
 
+export const userAccessUpdateSchema = z
+  .object({
+    isActive: z.boolean().optional(),
+    role: z.enum(roles).optional(),
+    requestedRole: z.enum(assignableRoles).optional().or(z.literal("")),
+  })
+  .refine(
+    (value) =>
+      value.isActive !== undefined ||
+      value.role !== undefined ||
+      value.requestedRole !== undefined,
+    {
+      message: "Provide at least one user access field to update.",
+    },
+  );
+
 export function parseJson<T>(input: unknown, schema: z.ZodType<T>) {
   return schema.parse(input);
 }
 
 export function serializeUser(uid: string, data: Record<string, unknown>): UserProfile {
+  const role = roles.includes(data.role as UserRole)
+    ? (data.role as UserRole)
+    : "student";
+  const requestedRole = assignableRoles.includes(data.requestedRole as AssignableRole)
+    ? (data.requestedRole as AssignableRole)
+    : undefined;
+
   return {
     uid,
     name: String(data.name ?? "Unknown User"),
     email: String(data.email ?? ""),
-    role: (data.role as UserRole) ?? "student",
+    role,
+    requestedRole,
     department: String(data.department ?? "Student Affairs"),
     hostelBlock: String(data.hostelBlock ?? "Block A"),
     phone: String(data.phone ?? ""),
@@ -209,6 +246,10 @@ export function statusLabel(status: OutpassStatus) {
 }
 
 export function roleLabel(role: UserRole) {
+  if (role === "pending") {
+    return "Pending Approval";
+  }
+
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 

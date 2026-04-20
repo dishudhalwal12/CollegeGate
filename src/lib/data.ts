@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { jsPDF } from "jspdf";
+import type { AuthSession } from "@/lib/auth";
 import {
   configSchema,
   createRequestSchema,
@@ -12,116 +13,154 @@ import {
   serializeUser,
   sortByCreated,
   summarizeOutpasses,
-  userStatusSchema,
+  userAccessUpdateSchema,
   validateRequestWindow,
   type GateLog,
   type OutpassRecord,
-  type SessionUser,
   type SystemConfig,
+  type UserProfile,
 } from "@/lib/collegegate";
-import { ensureDemoAccounts } from "@/lib/demo-users";
-import { requireAdminSdk } from "@/lib/firebase-admin";
+import {
+  getDocument,
+  listDocuments,
+  patchDocument,
+  queryDocuments,
+  setDocument,
+} from "@/lib/firestore-rest";
 
-async function getCollection<T>(
-  path: string,
-  serializer: (id: string, data: Record<string, unknown>) => T,
-) {
-  const { adminDb } = requireAdminSdk(path);
-  const snapshot = await adminDb.collection(path).get();
-  return snapshot.docs.map((doc) => serializer(doc.id, doc.data()));
-}
+async function getUserProfile(authToken: string, uid: string) {
+  const snapshot = await getDocument<Record<string, unknown>>(`users/${uid}`, authToken);
 
-export async function getUserProfile(uid: string) {
-  const { adminDb } = requireAdminSdk("user lookup");
-  const snapshot = await adminDb.collection("users").doc(uid).get();
-
-  if (!snapshot.exists) {
+  if (!snapshot) {
     throw new Error("The user profile was not found in Firestore.");
   }
 
-  return serializeUser(snapshot.id, snapshot.data() ?? {});
+  return serializeUser(snapshot.id, snapshot.data);
 }
 
-export async function getSystemConfig(): Promise<SystemConfig> {
-  const { adminDb } = requireAdminSdk("system config");
-  const snapshot = await adminDb.collection("systemConfig").doc("campus").get();
+async function getSystemConfig(authToken: string): Promise<SystemConfig> {
+  const snapshot = await getDocument<Record<string, unknown>>("systemConfig/campus", authToken);
 
-  if (!snapshot.exists) {
+  if (!snapshot) {
     return defaultSystemConfig;
   }
 
   return {
     ...defaultSystemConfig,
-    ...(snapshot.data() as Partial<SystemConfig>),
+    ...(snapshot.data as Partial<SystemConfig>),
   };
 }
 
-export async function getOutpasses() {
-  return getCollection("outpasses", serializeOutpass);
+async function getUsers(authToken: string) {
+  const snapshots = await listDocuments<Record<string, unknown>>("users", authToken);
+  return snapshots.map((document) => serializeUser(document.id, document.data));
 }
 
-export async function getUsers() {
-  return getCollection("users", serializeUser);
+async function getUsersForWarden(authToken: string, wardenId: string) {
+  const snapshots = await queryDocuments<Record<string, unknown>>(
+    "users",
+    authToken,
+    [
+      { field: "wardenId", value: wardenId },
+      { field: "role", value: "student" },
+    ],
+    200,
+  );
+
+  return snapshots.map((document) => serializeUser(document.id, document.data));
 }
 
-export async function getGateLogs() {
-  return getCollection("gateLogs", serializeGateLog);
+async function getOutpasses(authToken: string) {
+  const snapshots = await listDocuments<Record<string, unknown>>("outpasses", authToken);
+  return snapshots.map((document) => serializeOutpass(document.id, document.data));
 }
 
-export async function getStudentDashboard(uid: string) {
-  const [student, outpasses, config, users] = await Promise.all([
-    getUserProfile(uid),
-    getOutpasses(),
-    getSystemConfig(),
-    getUsers(),
+async function getOutpassesForStudent(authToken: string, uid: string) {
+  const snapshots = await queryDocuments<Record<string, unknown>>(
+    "outpasses",
+    authToken,
+    [{ field: "studentId", value: uid }],
+    200,
+  );
+
+  return snapshots.map((document) => serializeOutpass(document.id, document.data));
+}
+
+async function getOutpassesForWarden(authToken: string, uid: string) {
+  const snapshots = await queryDocuments<Record<string, unknown>>(
+    "outpasses",
+    authToken,
+    [{ field: "assignedWardenId", value: uid }],
+    200,
+  );
+
+  return snapshots.map((document) => serializeOutpass(document.id, document.data));
+}
+
+async function getOutpassById(authToken: string, outpassId: string) {
+  const snapshot = await getDocument<Record<string, unknown>>(
+    `outpasses/${outpassId}`,
+    authToken,
+  );
+
+  if (!snapshot) {
+    return null;
+  }
+
+  return serializeOutpass(snapshot.id, snapshot.data);
+}
+
+async function getGateLogs(authToken: string) {
+  const snapshots = await listDocuments<Record<string, unknown>>("gateLogs", authToken);
+  return snapshots.map((document) => serializeGateLog(document.id, document.data));
+}
+
+export async function getStudentDashboard(session: AuthSession) {
+  const [student, requests, config] = await Promise.all([
+    getUserProfile(session.authToken, session.uid),
+    getOutpassesForStudent(session.authToken, session.uid),
+    getSystemConfig(session.authToken),
   ]);
-  const requests = sortByCreated(outpasses.filter((item) => item.studentId === uid));
-  const fallbackWarden = users.find((user) => user.role === "warden");
-
-  if (!student.wardenId && fallbackWarden) {
-    student.wardenId = fallbackWarden.uid;
-  }
-
-  if (!student.wardenName && fallbackWarden) {
-    student.wardenName = fallbackWarden.name;
-  }
+  const sortedRequests = sortByCreated(requests);
 
   return {
     student,
-    requests,
+    requests: sortedRequests,
     config,
-    summary: summarizeOutpasses(requests),
+    summary: summarizeOutpasses(sortedRequests),
   };
 }
 
-export async function getWardenDashboard(uid: string) {
-  const [outpasses, users] = await Promise.all([getOutpasses(), getUsers()]);
-  const requests = sortByCreated(
-    outpasses.filter((item) => item.assignedWardenId === uid),
-  );
-  const studentsById = new Map(users.map((user) => [user.uid, user]));
+export async function getWardenDashboard(session: AuthSession) {
+  const [requests, students] = await Promise.all([
+    getOutpassesForWarden(session.authToken, session.uid),
+    getUsersForWarden(session.authToken, session.uid),
+  ]);
+  const sortedRequests = sortByCreated(requests);
+  const studentsById = new Map(students.map((user) => [user.uid, user]));
   const history = new Map<string, OutpassRecord[]>();
 
-  requests.forEach((request) => {
+  sortedRequests.forEach((request) => {
     const group = history.get(request.studentId) ?? [];
     group.push(request);
     history.set(request.studentId, group);
   });
 
   return {
-    requests,
-    summary: summarizeOutpasses(requests),
+    requests: sortedRequests,
+    summary: summarizeOutpasses(sortedRequests),
     studentsById,
     history,
   };
 }
 
-export async function getGuardDashboard() {
-  const [outpasses, gateLogs] = await Promise.all([getOutpasses(), getGateLogs()]);
+export async function getGuardDashboard(session: AuthSession) {
+  const [outpasses, gateLogs] = await Promise.all([
+    getOutpasses(session.authToken),
+    getGateLogs(session.authToken),
+  ]);
   const activeOutpasses = sortByCreated(
-    outpasses.filter(
-      (item) => item.status === "approved" || item.status === "exited",
-    ),
+    outpasses.filter((item) => item.status === "approved" || item.status === "exited"),
   );
 
   return {
@@ -131,12 +170,12 @@ export async function getGuardDashboard() {
   };
 }
 
-export async function getAdminDashboard() {
+export async function getAdminDashboard(session: AuthSession) {
   const [outpasses, users, config, gateLogs] = await Promise.all([
-    getOutpasses(),
-    getUsers(),
-    getSystemConfig(),
-    getGateLogs(),
+    getOutpasses(session.authToken),
+    getUsers(session.authToken),
+    getSystemConfig(session.authToken),
+    getGateLogs(session.authToken),
   ]);
 
   return {
@@ -148,61 +187,28 @@ export async function getAdminDashboard() {
   };
 }
 
-export async function getOutpassForStudent(uid: string, outpassId: string) {
-  const { adminDb } = requireAdminSdk("pass lookup");
-  const snapshot = await adminDb.collection("outpasses").doc(outpassId).get();
-
-  if (!snapshot.exists) {
-    return null;
-  }
-
-  const outpass = serializeOutpass(snapshot.id, snapshot.data() ?? {});
-  return outpass.studentId === uid ? outpass : null;
+export async function getOutpassForStudent(session: AuthSession, outpassId: string) {
+  const outpass = await getOutpassById(session.authToken, outpassId);
+  return outpass && outpass.studentId === session.uid ? outpass : null;
 }
 
-export async function createOutpass(
-  session: SessionUser,
-  payload: unknown,
-) {
+export async function createOutpass(session: AuthSession, payload: unknown) {
   const input = parseJson(payload, createRequestSchema);
-  const { adminAuth, adminDb } = requireAdminSdk("outpass creation");
-  const config = await getSystemConfig();
-  let student = await getUserProfile(session.uid);
-
-  if (!student.wardenId || !student.wardenName) {
-    if (student.email.endsWith("@collegegate.demo")) {
-      await ensureDemoAccounts(adminAuth, adminDb);
-      student = await getUserProfile(session.uid);
-    }
-
-    const users = await getUsers();
-    const fallbackWarden = users.find((user) => user.role === "warden");
-
-    if (!fallbackWarden) {
-      throw new Error("No warden account is available for approvals.");
-    }
-
-    student.wardenId = fallbackWarden.uid;
-    student.wardenName = fallbackWarden.name;
-
-    await adminDb.collection("users").doc(student.uid).set(
-      {
-        wardenId: student.wardenId,
-        wardenName: student.wardenName,
-      },
-      { merge: true },
-    );
-  }
+  const config = await getSystemConfig(session.authToken);
+  const student = await getUserProfile(session.authToken, session.uid);
 
   if (!student.isActive) {
     throw new Error("This account is inactive.");
   }
 
+  if (!student.wardenId || !student.wardenName) {
+    throw new Error("Your account is waiting for warden assignment before you can request an outpass.");
+  }
+
   validateRequestWindow(input, config);
 
   const timestamp = new Date().toISOString();
-  const reference = adminDb.collection("outpasses").doc();
-
+  const outpassId = randomUUID();
   const request: Omit<OutpassRecord, "id"> = {
     studentId: session.uid,
     studentName: student.name,
@@ -220,25 +226,21 @@ export async function createOutpass(
     updatedAt: timestamp,
   };
 
-  await reference.set(request);
-  return { id: reference.id, ...request };
+  await setDocument(`outpasses/${outpassId}`, request, session.authToken);
+  return { id: outpassId, ...request };
 }
 
 export async function decideOutpass(
-  session: SessionUser,
+  session: AuthSession,
   outpassId: string,
   payload: unknown,
 ) {
   const input = parseJson(payload, decisionSchema);
-  const { adminDb } = requireAdminSdk("outpass decision");
-  const reference = adminDb.collection("outpasses").doc(outpassId);
-  const snapshot = await reference.get();
+  const outpass = await getOutpassById(session.authToken, outpassId);
 
-  if (!snapshot.exists) {
+  if (!outpass) {
     throw new Error("The requested outpass was not found.");
   }
-
-  const outpass = serializeOutpass(snapshot.id, snapshot.data() ?? {});
 
   if (outpass.assignedWardenId !== session.uid && session.role !== "admin") {
     throw new Error("This request belongs to another approval queue.");
@@ -251,46 +253,46 @@ export async function decideOutpass(
   const timestamp = new Date().toISOString();
   const nextStatus = input.action === "approve" ? "approved" : "rejected";
 
-  await reference.update({
-    status: nextStatus,
-    approverRemark: input.remark,
-    approvedAt: input.action === "approve" ? timestamp : null,
-    rejectedAt: input.action === "reject" ? timestamp : null,
-    qrToken:
-      input.action === "approve"
-        ? `collegegate:${outpassId}:${randomUUID()}`
-        : null,
-    updatedAt: timestamp,
-  });
+  await patchDocument(
+    `outpasses/${outpassId}`,
+    {
+      status: nextStatus,
+      approverRemark: input.remark,
+      approvedAt: input.action === "approve" ? timestamp : null,
+      rejectedAt: input.action === "reject" ? timestamp : null,
+      qrToken: input.action === "approve" ? `collegegate:${outpassId}:${randomUUID()}` : null,
+      updatedAt: timestamp,
+    },
+    session.authToken,
+  );
 }
 
-export async function scanOutpass(
-  session: SessionUser,
-  payload: unknown,
-) {
+export async function scanOutpass(session: AuthSession, payload: unknown) {
   const input = parseJson(payload, scanSchema);
-  const { adminDb } = requireAdminSdk("guard scan");
-  const snapshot = await adminDb
-    .collection("outpasses")
-    .where("qrToken", "==", input.qrToken)
-    .limit(1)
-    .get();
+  const matches = await queryDocuments<Record<string, unknown>>(
+    "outpasses",
+    session.authToken,
+    [{ field: "qrToken", value: input.qrToken }],
+    1,
+  );
 
-  if (snapshot.empty) {
+  if (matches.length === 0) {
     throw new Error("No approved pass matches that QR token.");
   }
 
-  const document = snapshot.docs[0];
-  const outpass = serializeOutpass(document.id, document.data());
+  const outpass = serializeOutpass(matches[0].id, matches[0].data);
   const now = new Date().toISOString();
-  const gateLogRef = adminDb.collection("gateLogs").doc(outpass.id);
 
   if (outpass.status === "approved") {
-    await document.ref.update({
-      status: "exited",
-      exitAt: now,
-      updatedAt: now,
-    });
+    await patchDocument(
+      `outpasses/${outpass.id}`,
+      {
+        status: "exited",
+        exitAt: now,
+        updatedAt: now,
+      },
+      session.authToken,
+    );
 
     const gateLog: GateLog = {
       id: outpass.id,
@@ -303,7 +305,11 @@ export async function scanOutpass(
       updatedAt: now,
     };
 
-    await gateLogRef.set(gateLog);
+    await setDocument(
+      `gateLogs/${outpass.id}`,
+      gateLog as unknown as Record<string, unknown>,
+      session.authToken,
+    );
 
     return {
       nextStatus: "exited",
@@ -312,20 +318,25 @@ export async function scanOutpass(
   }
 
   if (outpass.status === "exited") {
-    await document.ref.update({
-      status: "returned",
-      returnedAt: now,
-      updatedAt: now,
-    });
+    await patchDocument(
+      `outpasses/${outpass.id}`,
+      {
+        status: "returned",
+        returnedAt: now,
+        updatedAt: now,
+      },
+      session.authToken,
+    );
 
-    await gateLogRef.set(
+    await patchDocument(
+      `gateLogs/${outpass.id}`,
       {
         returnAt: now,
         scannedByGuardId: session.uid,
         scannedByGuardName: session.name,
         updatedAt: now,
       },
-      { merge: true },
+      session.authToken,
     );
 
     return {
@@ -337,32 +348,49 @@ export async function scanOutpass(
   throw new Error("This pass is no longer active at the gate.");
 }
 
-export async function updateSystemConfig(payload: unknown) {
+export async function updateSystemConfig(session: AuthSession, payload: unknown) {
   const input = parseJson(payload, configSchema);
-  const { adminDb } = requireAdminSdk("config update");
   const timestamp = new Date().toISOString();
 
-  await adminDb.collection("systemConfig").doc("campus").set(
+  await patchDocument(
+    "systemConfig/campus",
     {
       ...input,
       updatedAt: timestamp,
     },
-    { merge: true },
+    session.authToken,
   );
 }
 
-export async function updateUserStatus(userId: string, isActive: boolean) {
-  const input = userStatusSchema.parse({ isActive });
-  const { adminDb } = requireAdminSdk("user update");
+export async function updateUserAccess(
+  session: AuthSession,
+  userId: string,
+  payload: unknown,
+) {
+  const input = userAccessUpdateSchema.parse(payload);
+  const updates: Record<string, unknown> = {};
 
-  await adminDb
-    .collection("users")
-    .doc(userId)
-    .set({ isActive: input.isActive }, { merge: true });
+  if (input.isActive !== undefined) {
+    updates.isActive = input.isActive;
+  }
+
+  if (input.role !== undefined) {
+    updates.role = input.role;
+  }
+
+  if (input.requestedRole !== undefined) {
+    updates.requestedRole = input.requestedRole || null;
+  }
+
+  if (Object.keys(updates).length === 0) {
+    throw new Error("No user access updates were provided.");
+  }
+
+  await patchDocument(`users/${userId}`, updates, session.authToken);
 }
 
-export async function buildReportPayload() {
-  const outpasses = await getOutpasses();
+export async function buildReportPayload(session: AuthSession) {
+  const outpasses = await getOutpasses(session.authToken);
   return sortByCreated(outpasses);
 }
 
@@ -396,11 +424,11 @@ export async function buildPdfReport(records: OutpassRecord[]) {
   return Buffer.from(pdf.output("arraybuffer"));
 }
 
-export async function buildSeedPreview() {
+export async function buildSeedPreview(session: AuthSession) {
   const [users, outpasses, config] = await Promise.all([
-    getUsers(),
-    getOutpasses(),
-    getSystemConfig(),
+    getUsers(session.authToken),
+    getOutpasses(session.authToken),
+    getSystemConfig(session.authToken),
   ]);
 
   return {
@@ -409,3 +437,5 @@ export async function buildSeedPreview() {
     config,
   };
 }
+
+export type { UserProfile };

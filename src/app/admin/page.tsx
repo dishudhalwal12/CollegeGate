@@ -11,7 +11,7 @@ import { getAdminDashboard } from "@/lib/data";
 
 export default async function AdminPage() {
   const session = await requireSession("admin");
-  const { outpasses, users, config, gateLogsById, summary } = await getAdminDashboard();
+  const { outpasses, users, config, gateLogsById, summary } = await getAdminDashboard(session);
 
   return (
     <DashboardFrame session={session} eyebrow="Admin control room" title="Rules, People, Reports">
@@ -48,11 +48,27 @@ export default async function AdminPage() {
             <article className="outpass-card" key={user.uid}>
               <div className="outpass-head">
                 <div>
-                  <p className="micro-copy">{user.role}</p>
+                  <p className="micro-copy">
+                    {user.role === "pending" && user.requestedRole
+                      ? `pending ${user.requestedRole} request`
+                      : user.role}
+                  </p>
                   <h3>{user.name}</h3>
                 </div>
-                <span className={`status-badge ${user.isActive ? "success" : "muted"}`}>
-                  {user.isActive ? "Active" : "Inactive"}
+                <span
+                  className={`status-badge ${
+                    user.role === "pending"
+                      ? "warning"
+                      : user.isActive
+                        ? "success"
+                        : "muted"
+                  }`}
+                >
+                  {user.role === "pending"
+                    ? "Pending Approval"
+                    : user.isActive
+                      ? "Active"
+                      : "Inactive"}
                 </span>
               </div>
               <div className="detail-grid">
@@ -68,6 +84,12 @@ export default async function AdminPage() {
                   <p className="micro-copy">Block</p>
                   <p>{user.hostelBlock}</p>
                 </div>
+                {user.requestedRole ? (
+                  <div>
+                    <p className="micro-copy">Requested Role</p>
+                    <p>{user.requestedRole}</p>
+                  </div>
+                ) : null}
               </div>
               <UserStatusToggle user={user} />
             </article>

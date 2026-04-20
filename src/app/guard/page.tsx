@@ -6,7 +6,7 @@ import { getGuardDashboard } from "@/lib/data";
 
 export default async function GuardPage() {
   const session = await requireSession("guard");
-  const { activeOutpasses, gateLogsById, summary } = await getGuardDashboard();
+  const { activeOutpasses, gateLogsById, summary } = await getGuardDashboard(session);
 
   return (
     <DashboardFrame session={session} eyebrow="Guard gate interface" title="Scan And Confirm">

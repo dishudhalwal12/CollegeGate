@@ -4,9 +4,9 @@ import { updateSystemConfig } from "@/lib/data";
 
 export async function PATCH(request: NextRequest) {
   try {
-    await assertApiRole(request, "admin");
+    const session = await assertApiRole(request, "admin");
     const body = await request.json();
-    await updateSystemConfig(body);
+    await updateSystemConfig(session, body);
     return NextResponse.json({ ok: true });
   } catch (error) {
     return withApiError(error);

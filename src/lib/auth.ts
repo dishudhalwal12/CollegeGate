@@ -2,11 +2,18 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { type NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { type SessionUser, serializeUser, type UserRole } from "@/lib/collegegate";
-import { requireAdminSdk } from "@/lib/firebase-admin";
+import { getDocument } from "@/lib/firestore-rest";
+import { refreshFirebaseIdToken, verifyFirebaseIdToken } from "@/lib/firebase-session";
+import { serializeUser, type SessionUser, type UserRole } from "@/lib/collegegate";
 
-export const SESSION_COOKIE = "collegegate_session";
+export const ID_TOKEN_COOKIE = "collegegate_id_token";
+export const REFRESH_TOKEN_COOKIE = "collegegate_refresh_token";
 export const SESSION_MAX_AGE = 60 * 60 * 24 * 5;
+
+export type AuthSession = SessionUser & {
+  authToken: string;
+  refreshToken?: string;
+};
 
 export class ApiError extends Error {
   status: number;
@@ -35,23 +42,56 @@ function formatZodError(error: ZodError) {
     .join(" ");
 }
 
-async function loadUserFromSession(sessionCookie: string): Promise<SessionUser | null> {
+async function resolveVerifiedToken(idToken: string, refreshToken?: string) {
   try {
-    const { adminAuth, adminDb } = requireAdminSdk("session validation");
-    const decodedToken = await adminAuth.verifySessionCookie(sessionCookie, true);
-    const userSnapshot = await adminDb.collection("users").doc(decodedToken.uid).get();
+    const decoded = await verifyFirebaseIdToken(idToken);
+    return {
+      token: idToken,
+      decoded,
+      refreshToken,
+    };
+  } catch (error) {
+    if (refreshToken && error instanceof Error && error.name === "FirebaseIdTokenExpired") {
+      const refreshed = await refreshFirebaseIdToken(refreshToken);
+      const decoded = await verifyFirebaseIdToken(refreshed.idToken);
 
-    if (!userSnapshot.exists) {
+      return {
+        token: refreshed.idToken,
+        decoded,
+        refreshToken: refreshed.refreshToken,
+      };
+    }
+
+    throw error;
+  }
+}
+
+async function loadUserFromSession(
+  idToken: string,
+  refreshToken?: string,
+): Promise<AuthSession | null> {
+  try {
+    const resolved = await resolveVerifiedToken(idToken, refreshToken);
+    const userSnapshot = await getDocument<Record<string, unknown>>(
+      `users/${resolved.decoded.uid}`,
+      resolved.token,
+    );
+
+    if (!userSnapshot) {
       return null;
     }
 
-    const profile = serializeUser(decodedToken.uid, userSnapshot.data() ?? {});
+    const profile = serializeUser(resolved.decoded.uid, userSnapshot.data);
 
-    if (!profile.isActive) {
+    if (!profile.isActive && profile.role !== "pending") {
       return null;
     }
 
-    return profile;
+    return {
+      ...profile,
+      authToken: resolved.token,
+      refreshToken: resolved.refreshToken,
+    };
   } catch {
     return null;
   }
@@ -59,13 +99,14 @@ async function loadUserFromSession(sessionCookie: string): Promise<SessionUser |
 
 export async function getServerSession() {
   const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get(SESSION_COOKIE)?.value;
+  const idToken = cookieStore.get(ID_TOKEN_COOKIE)?.value;
+  const refreshToken = cookieStore.get(REFRESH_TOKEN_COOKIE)?.value;
 
-  if (!sessionCookie) {
+  if (!idToken) {
     return null;
   }
 
-  return loadUserFromSession(sessionCookie);
+  return loadUserFromSession(idToken, refreshToken);
 }
 
 export async function requireSession(roles?: UserRole | UserRole[]) {
@@ -88,13 +129,14 @@ export async function assertApiRole(
   request: NextRequest,
   roles?: UserRole | UserRole[],
 ) {
-  const sessionCookie = request.cookies.get(SESSION_COOKIE)?.value;
+  const idToken = request.cookies.get(ID_TOKEN_COOKIE)?.value;
+  const refreshToken = request.cookies.get(REFRESH_TOKEN_COOKIE)?.value;
 
-  if (!sessionCookie) {
+  if (!idToken) {
     throw new ApiError(401, "You need to sign in before continuing.");
   }
 
-  const session = await loadUserFromSession(sessionCookie);
+  const session = await loadUserFromSession(idToken, refreshToken);
 
   if (!session) {
     throw new ApiError(401, "Your session expired. Please sign in again.");
@@ -104,6 +146,69 @@ export async function assertApiRole(
 
   if (allowed.length > 0 && !allowed.includes(session.role)) {
     throw new ApiError(403, "You do not have permission to perform this action.");
+  }
+
+  return session;
+}
+
+export function applySessionCookies(
+  response: NextResponse,
+  idToken: string,
+  refreshToken?: string,
+) {
+  response.cookies.set({
+    name: ID_TOKEN_COOKIE,
+    value: idToken,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: SESSION_MAX_AGE,
+  });
+
+  if (refreshToken) {
+    response.cookies.set({
+      name: REFRESH_TOKEN_COOKIE,
+      value: refreshToken,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: SESSION_MAX_AGE,
+    });
+  }
+}
+
+export function clearSessionCookies(response: NextResponse) {
+  response.cookies.set({
+    name: ID_TOKEN_COOKIE,
+    value: "",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 0,
+  });
+
+  response.cookies.set({
+    name: REFRESH_TOKEN_COOKIE,
+    value: "",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 0,
+  });
+}
+
+export async function readUserProfileFromIdToken(
+  idToken: string,
+  refreshToken?: string,
+) {
+  const session = await loadUserFromSession(idToken, refreshToken);
+
+  if (!session) {
+    throw new ApiError(403, "This account does not have a CollegeGate profile yet.");
   }
 
   return session;

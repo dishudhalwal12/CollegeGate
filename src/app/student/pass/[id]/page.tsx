@@ -14,7 +14,7 @@ export default async function StudentPassPage({
 }) {
   const session = await requireSession("student");
   const { id } = await params;
-  const outpass = await getOutpassForStudent(session.uid, id);
+  const outpass = await getOutpassForStudent(session, id);
 
   if (!outpass) {
     redirect("/student");
