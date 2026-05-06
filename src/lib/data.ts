@@ -159,7 +159,7 @@ async function getActiveWardensForStudent(authToken: string, student: UserProfil
     20,
   );
 
-  if (fallbackWardens) {
+  if (fallbackWardens && fallbackWardens.length > 0) {
     return fallbackWardens;
   }
 

@@ -123,7 +123,7 @@ export function shouldUseLocalStore(error: unknown) {
   return collectErrorMessages(error).some(
     (message) =>
       isPermissionDeniedMessage(message) ||
-      /firestore request failed|firestore lookup failed/i.test(message),
+      /firestore request failed|firestore lookup failed|requires an index/i.test(message),
   );
 }
 

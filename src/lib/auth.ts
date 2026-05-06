@@ -83,6 +83,7 @@ async function loadUserFromSession(
 
       if (userSnapshot) {
         profile = serializeUser(resolved.decoded.uid, userSnapshot.data);
+        upsertLocalUser(resolved.decoded.uid, userSnapshot.data);
       }
     } catch (error) {
       if (!shouldUseLocalStore(error)) {

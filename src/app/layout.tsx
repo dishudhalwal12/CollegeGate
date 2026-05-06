@@ -30,8 +30,9 @@ export default function RootLayout({
       lang="en"
       data-scroll-behavior="smooth"
       className={`${displayFont.variable} ${bodyFont.variable}`}
+      suppressHydrationWarning
     >
-      <body>{children}</body>
+      <body suppressHydrationWarning>{children}</body>
     </html>
   );
 }

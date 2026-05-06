@@ -60,9 +60,9 @@ export async function POST(request: NextRequest) {
       if (!shouldUseLocalStore(error)) {
         throw error;
       }
-
-      upsertLocalUser(decoded.uid, registration.userProfile);
     }
+
+    upsertLocalUser(decoded.uid, registration.userProfile);
 
     return NextResponse.json({
       ok: true,
